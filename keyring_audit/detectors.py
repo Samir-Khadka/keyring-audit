@@ -113,6 +113,19 @@ DETECTORS: list[Detector] = [
     # --- Stripe ---------------------------------------------------------
     Detector("stripe-live", "stripe", r"(?:sk|rk)_live_[A-Za-z0-9]{16,}",
              description="Stripe live secret/restricted key"),
+    # --- GCP ------------------------------------------------------------
+    # A GCP API key: AIza + 35 base64url chars. Detected, but its
+    # validity is always "unknown" — whether a key works depends on
+    # which APIs are enabled for its project, so a 403 cannot tell a
+    # valid key from an invalid one (cloud.py). A service-account key
+    # (a JSON file with "type": "service_account") is paired by the
+    # scanner, like an AWS key/secret pair.
+    Detector("gcp-api-key", "gcp", r"AIza[0-9A-Za-z_-]{35}",
+             description="GCP API key"),
+    # --- Azure ----------------------------------------------------------
+    # An Azure service-principal client secret has no fixed shape — it
+    # is paired by the scanner with a nearby client_id and tenant_id,
+    # like an AWS key/secret pair.
     # --- Private keys ---------------------------------------------------
     Detector("private-key", "generic",
              r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----",

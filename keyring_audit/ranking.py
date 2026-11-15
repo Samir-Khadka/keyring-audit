@@ -38,6 +38,13 @@ AWS_DESTRUCTIVE_ACTIONS = {"s3:DeleteBucket", "ec2:TerminateInstances",
 GITLAB_ADMIN_SCOPES = {"api", "sudo", "admin_mode"}
 GITLAB_WRITE_SCOPES = {"write_repository", "write_registry", "write_user",
                        "create_runner", "manage_runner", "ai_features"}
+# GCP: the cloud-platform OAuth scope is full access to the project.
+GCP_SCOPE_CLOUD_PLATFORM = "https://www.googleapis.com/auth/cloud-platform"
+# Azure: application roles that are effectively admin (directory and
+# application write, and the ability to grant consent).
+AZURE_ADMIN_ROLES = {"Directory.ReadWrite.All", "Application.ReadWrite.All",
+                     "AppRoleAssignment.ReadWrite.All",
+                     "RoleManagement.ReadWrite.Directory"}
 
 
 def _privilege(finding: dict) -> tuple[int, str]:
@@ -122,6 +129,25 @@ def _privilege(finding: dict) -> tuple[int, str]:
         if "restricted key" in permissions:
             return 25, "restricted key — limited, exact limits not visible via the API"
         return 20, "key type unknown"
+    if provider == "gcp":
+        # The token's scope is the permission. cloud-platform is full
+        # access to every GCP API the project enables; a narrower scope
+        # is a smaller blast radius.
+        if GCP_SCOPE_CLOUD_PLATFORM in permissions:
+            return 40, "cloud-platform scope — full access to the project"
+        if permissions:
+            return 25, f"scope: {', '.join(permissions)}"
+        return 20, "scope not reported by the token endpoint"
+    if provider == "azure":
+        # The access token's roles claim is the application permission
+        # list. Directory and application write roles are effectively
+        # admin; any role is more than nothing.
+        roles = set(permissions)
+        if roles & AZURE_ADMIN_ROLES:
+            return 40, f"admin roles: {sorted(roles & AZURE_ADMIN_ROLES)}"
+        if roles:
+            return 25, f"roles: {', '.join(sorted(roles))}"
+        return 15, "no application roles on the token"
     return 20, "privilege unknown for this provider"
 
 

@@ -41,7 +41,25 @@ from .detectors import (
 from .ownership import assign_owners
 
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
-PAIR_WINDOW = 10  # lines around an AWS key ID to look for its secret
+PAIR_WINDOW = 10  # lines around a key ID to look for its secret
+
+# A GCP service-account key is a JSON object: "type": "service_account",
+# "project_id", "client_email", and "private_key" (a PEM RSA key whose
+# value is one long line, with \n escapes). An Azure service principal
+# is a client_secret paired with a client_id and a tenant_id. Both are
+# paired within PAIR_WINDOW lines, like an AWS key/secret pair.
+_GCP_CLIENT_EMAIL_RE = re.compile(
+    r'"client_email"\s*:\s*"([^"]+)"|client_email\s*[:=]\s*[\'"]([^\'"]+)[\'"]')
+_GCP_PRIVATE_KEY_RE = re.compile(
+    r'"private_key"\s*:\s*"((?:\\n|[^"])*?-----END PRIVATE KEY-----\\n?)"')
+_GCP_PROJECT_ID_RE = re.compile(
+    r'"project_id"\s*:\s*"([^"]+)"|project_id\s*[:=]\s*[\'"]([^\'"]+)[\'"]')
+_AZURE_CLIENT_SECRET_RE = re.compile(
+    r'client_secret\s*[:=]\s*[\'"]([^\'"]{8,})[\'"]')
+_AZURE_CLIENT_ID_RE = re.compile(
+    r'client_id\s*[:=]\s*[\'"]([^\'"]+)[\'"]')
+_AZURE_TENANT_ID_RE = re.compile(
+    r'tenant_id\s*[:=]\s*[\'"]([^\'"]+)[\'"]')
 SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__",
              ".pytest_cache", ".mypy_cache", ".tox", "dist", "build"}
 
@@ -57,24 +75,36 @@ def _is_binary(path: Path) -> bool:
 def _finding(detector: str, provider: str, value: str, source: str,
              line_no: int | None, commit: str | None = None,
              author: str | None = None, date: int | None = None,
-             paired_secret: str | None = None) -> dict:
+             paired_secret: str | None = None,
+             fingerprint_value: str | None = None,
+             extra: dict | None = None) -> dict:
     # _secret is the credential material the validity check needs, kept
     # only in memory and stripped before any report is written (report.py).
     # For an AWS key ID it is the paired secret (None when unpaired);
-    # for every other detector it is the found value itself.
-    # The AWS key ID itself is NOT a secret (it is the public identifier,
-    # like a username) — it is stored in full so the validity check can
-    # sign the STS call.
-    secret = paired_secret if detector == "aws-access-key-id" else value
+    # for a GCP service-account key it is the paired private key; for
+    # every other detector it is the found value itself.
+    # The AWS key ID and the GCP client_email are NOT secrets (they are
+    # the public identifiers, like usernames) — they are stored in full
+    # so the validity check can use them. A service account can hold
+    # several keys under one client_email, so a GCP finding's fingerprint
+    # is of the private key, not the email.
+    if detector in ("aws-access-key-id", "gcp-service-account"):
+        secret = paired_secret
+    else:
+        secret = value
     record = {"detector": detector, "provider": provider,
               # The private-key header is structure, not secret material —
               # showing it is safe and more useful than "----…----".
               "redacted": value if detector == "private-key" else redact(value),
-              "fingerprint": fingerprint(value),
+              "fingerprint": fingerprint(fingerprint_value or value),
               "source": source, "line": line_no, "commit": commit,
               "author": author, "date": date, "_secret": secret}
     if detector == "aws-access-key-id":
         record["key_id"] = value
+    if detector == "gcp-service-account":
+        record["client_email"] = value
+    if extra:
+        record.update(extra)
     return record
 
 
@@ -82,10 +112,18 @@ def _scan_text_lines(lines: list[tuple[int, str]], source: str,
                      commit: str | None = None,
                      author: str | None = None,
                      date: int | None = None) -> list[dict]:
-    """Scan numbered lines. Pairs AWS key IDs with nearby secrets."""
+    """Scan numbered lines. Pairs AWS key IDs with nearby secrets,
+    GCP service-account keys with their client_email, and Azure
+    client secrets with their client_id and tenant_id."""
     findings: list[dict] = []
     aws_ids: list[tuple[int, str]] = []  # (line_no, key_id)
     aws_secrets: list[tuple[int, str]] = []  # (line_no, secret)
+    gcp_emails: list[tuple[int, str]] = []  # (line_no, client_email)
+    gcp_keys: list[tuple[int, str]] = []  # (line_no, private key PEM)
+    gcp_projects: list[tuple[int, str]] = []  # (line_no, project_id)
+    azure_secrets: list[tuple[int, str]] = []  # (line_no, client_secret)
+    azure_clients: list[tuple[int, str]] = []  # (line_no, client_id)
+    azure_tenants: list[tuple[int, str]] = []  # (line_no, tenant_id)
     for line_no, text in lines:
         for hit in scan_line(text):
             if hit["detector"] == "aws-access-key-id":
@@ -97,6 +135,21 @@ def _scan_text_lines(lines: list[tuple[int, str]], source: str,
         # AWS secret candidates, assigned form (secret = <40 chars).
         for m in AWS_SECRET_ASSIGNED_RE.finditer(text):
             aws_secrets.append((line_no, m.group(1)))
+        # GCP service-account fields, and Azure service-principal fields.
+        for m in _GCP_CLIENT_EMAIL_RE.finditer(text):
+            gcp_emails.append((line_no, m.group(1) or m.group(2)))
+        for m in _GCP_PRIVATE_KEY_RE.finditer(text):
+            # The JSON value holds literal \n escapes; the PEM parser
+            # needs real newlines.
+            gcp_keys.append((line_no, m.group(1).replace("\\n", "\n")))
+        for m in _GCP_PROJECT_ID_RE.finditer(text):
+            gcp_projects.append((line_no, m.group(1) or m.group(2)))
+        for m in _AZURE_CLIENT_SECRET_RE.finditer(text):
+            azure_secrets.append((line_no, m.group(1)))
+        for m in _AZURE_CLIENT_ID_RE.finditer(text):
+            azure_clients.append((line_no, m.group(1)))
+        for m in _AZURE_TENANT_ID_RE.finditer(text):
+            azure_tenants.append((line_no, m.group(1)))
     # Bare form: a 40-char base64 run near an AWS key ID. Second pass,
     # so the order of ID and secret in the file does not matter.
     id_lines = {i for i, _ in aws_ids}
@@ -127,11 +180,69 @@ def _scan_text_lines(lines: list[tuple[int, str]], source: str,
         else:
             findings.append(_finding("aws-access-key-id", "aws", key_id,
                                      source, line_no, commit, author, date))
+    # Pair each GCP client_email with the nearest private key in the
+    # window. A service-account key without its private key nearby is
+    # not a usable credential — it is not reported.
+    paired_gcp_keys: list[str] = []
+    paired_gcp_key_lines: set[int] = set()
+    for line_no, email in gcp_emails:
+        best: tuple[int, str] | None = None
+        for k_line, key in gcp_keys:
+            if abs(k_line - line_no) <= PAIR_WINDOW:
+                if best is None or abs(k_line - line_no) < abs(best[0] - line_no):
+                    best = (k_line, key)
+        if best is None:
+            continue
+        paired_gcp_keys.append(best[1])
+        paired_gcp_key_lines.add(best[0])
+        best: tuple[int, str] | None = None
+        for k_line, key in gcp_keys:
+            if abs(k_line - line_no) <= PAIR_WINDOW:
+                if best is None or abs(k_line - line_no) < abs(best[0] - line_no):
+                    best = (k_line, key)
+        if best is None:
+            continue
+        project = next((p for p_line, p in gcp_projects
+                        if abs(p_line - line_no) <= PAIR_WINDOW), None)
+        findings.append(_finding(
+            "gcp-service-account", "gcp", email, source, line_no,
+            commit, author, date, paired_secret=best[1],
+            fingerprint_value=best[1],
+            extra={"project_id": project} if project else None))
+    # Pair each Azure client_secret with the nearest client_id and
+    # tenant_id in the window. A secret without both is not a usable
+    # service principal — it is not reported as Azure (the generic
+    # high-entropy detector may still have flagged the value itself).
+    used_azure: set[str] = set()
+    for line_no, secret in azure_secrets:
+        client = next((c for c_line, c in azure_clients
+                       if abs(c_line - line_no) <= PAIR_WINDOW), None)
+        tenant = next((t for t_line, t in azure_tenants
+                       if abs(t_line - line_no) <= PAIR_WINDOW), None)
+        if client is None or tenant is None:
+            continue
+        used_azure.add(secret)
+        findings.append(_finding(
+            "azure-client-secret", "azure", secret, source, line_no,
+            commit, author, date,
+            extra={"client_id": client, "tenant_id": tenant}))
     # A paired AWS secret is not a second finding: drop any generic hit
-    # whose value is a secret already paired with a key ID.
+    # whose value is a secret already paired with a key ID. The same
+    # for an Azure client secret already paired with its client id, and
+    # for a GCP private-key body the generic detector caught inside the
+    # JSON line (the body is a substring of the paired key). A private
+    # key that is part of a paired service-account key is not a second
+    # finding either — the GCP finding already covers it.
     return [f for f in findings
             if not (f["detector"] == "generic-high-entropy"
-                    and f.get("_secret") in paired_values)]
+                    and f.get("_secret") in paired_values)
+            and not (f["detector"] == "generic-high-entropy"
+                     and f.get("_secret") in used_azure)
+            and not (f["detector"] == "generic-high-entropy"
+                     and any(f.get("_secret", "") in k
+                             for k in paired_gcp_keys))
+            and not (f["detector"] == "private-key"
+                     and f.get("line") in paired_gcp_key_lines)]
 
 
 def scan_working_tree(root: Path) -> tuple[list[dict], list[str]]:

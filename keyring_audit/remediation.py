@@ -333,6 +333,39 @@ def guide(finding: dict) -> list[str]:
             "keys → Roll key.",
             "2. Update every place that used the old key.",
         ]
+    if provider == "gcp":
+        if finding["detector"] == "gcp-service-account":
+            email = finding.get("client_email", "<SERVICE-ACCOUNT-EMAIL>")
+            return [
+                "1. Delete the key in the Google Cloud console → IAM & "
+                "Admin → Service Accounts → Keys, or with: "
+                f"gcloud iam service-accounts keys delete <KEY-ID> "
+                f"--iam-account={email}",
+                "2. Create a replacement key for the same service account "
+                "with the minimum roles, and update every place that used "
+                "the old one.",
+                "3. Prefer Workload Identity Federation over a downloaded "
+                "key — a key file in a repo is the leak this tool exists "
+                "to catch.",
+            ]
+        return [
+            "1. Delete the API key in the Google Cloud console → APIs & "
+            "Services → Credentials, or restrict it to only the APIs and "
+            "referrers it needs.",
+            "2. Create a replacement and update every place that used the "
+            "old one.",
+        ]
+    if provider == "azure":
+        return [
+            "1. Delete the client secret in the Azure portal → App "
+            "registrations → your app → Certificates & secrets, or with: "
+            "az ad app credential delete --id <APP-ID> --key-id <KEY-ID>.",
+            "2. Create a replacement secret with the minimum API "
+            "permissions, and update every place that used the old one.",
+            "3. Prefer a managed identity or a federated credential over "
+            "a client secret — a secret in a repo is the leak this tool "
+            "exists to catch.",
+        ]
     return [
         "1. Revoke this credential at the provider, and replace it with a "
         "new one with the minimum permissions.",

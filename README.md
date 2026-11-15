@@ -81,6 +81,14 @@ risk, and tells the owner exactly how to revoke or rotate them.
   two years is flagged stale. GitHub never returns a secret's value,
   so liveness is always "unknown" — the report says so, and the
   privilege is scored in the middle rather than assumed safe.
+- **Cloud accounts.** GCP service-account keys and Azure
+  service-principal client secrets are detected and validated by
+  exchanging the credential for a token. A GCP key is checked with
+  the OAuth2 JWT grant (RS256, implemented in the standard library —
+  no crypto dependency); an Azure secret with the client-credentials
+  grant. The GCP token's scope and the Azure token's roles are
+  reported as the permission list, so the ranking can score what the
+  credential can actually do.
 - **Assign owners.** Every finding names who is responsible: AWS
   Owner/Team tags first, then the commit author, then `git blame` for
   working-tree and staged lines (an uncommitted line names the local
@@ -173,7 +181,7 @@ Example output:
    own is unauthorised access in most jurisdictions — this tool refuses
    to validate a credential it was not given by its owner.
 
-## Honest limits (v1.1)
+## Honest limits (v1.2)
 
 - The staged scan reads added lines only — a secret already in history
   is not the staged diff's business (clean it separately; a full scan
@@ -218,6 +226,14 @@ Example output:
   safe. "Used" means a workflow file references `${{ secrets.NAME }}`;
   whether the workflow actually runs is not something the API says.
   The token needs the `repo` scope (or Secrets: read).
+- Cloud accounts: a GCP API key's validity is always "unknown"
+  (whether it works depends on which APIs are enabled for its
+  project, so a 403 cannot tell a valid key from an invalid one). An
+  Azure check against a tenant id that does not exist returns
+  "unknown", not "dead", because the endpoint rejects the request
+  itself. The IAM policy read (which GCP roles / Azure role
+  assignments the identity holds) is not in v1.2 — the token's
+  scope/roles are the evidence.
 
 - Validity checks are implemented for GitHub, AWS, Slack, GitLab and
   Stripe. Private keys and JWTs are detected but have no live check —
@@ -239,8 +255,8 @@ Example output:
 
 ## Roadmap
 
-- **Phase 6 (remaining):** SaaS integrations, cloud accounts (GCP,
-  Azure), and Slack/GitLab connectors.
+- **Phase 6 (remaining):** SaaS integrations, and Slack/GitLab
+  connectors.
 - **The combined install question is closed:** the two repos stay
   separate. Keyring Audit and Agent Gateway share the identity graph
   (`agents --format json`), not a repo.

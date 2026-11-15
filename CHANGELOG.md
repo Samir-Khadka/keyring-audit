@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.2.0 — 2026-11-15
+
+Phase 6 coverage, third piece: cloud accounts (GCP, Azure).
+
+- GCP service-account keys and Azure service-principal client secrets
+  are detected and validated by exchanging the credential for a token.
+  A GCP key is checked with the OAuth2 JWT grant — RS256 implemented
+  in the standard library (no crypto dependency), verified byte-for-byte
+  against OpenSSL's own signature. An Azure secret is checked with
+  the client-credentials grant. The GCP token's scope and the Azure
+  token's roles are reported as the permission list, so the ranking
+  scores what the credential can actually do (cloud-platform scope and
+  directory/application write roles score 40). 196 tests.
+- Honest limits, stated in the report: a GCP API key's validity is
+  always "unknown" (whether it works depends on which APIs are enabled
+  for its project); an Azure check against a tenant id that does not
+  exist returns "unknown", not "dead". The IAM policy read is not in
+  v1.2 — the token's scope/roles are the evidence.
+- Dogfood: a demo repo with a test GCP service-account key and a test
+  Azure secret. The GCP key was verified DEAD against the real Google
+  token endpoint (the grant was rejected), scored 30 with "safe to
+  kill: yes". The Azure secret returned "unknown" (the fake tenant id
+  does not exist, so the endpoint rejected the request itself).
+
 ## v1.1.0 — 2026-11-15
 
 Phase 6 coverage, second piece: CI/CD variables.

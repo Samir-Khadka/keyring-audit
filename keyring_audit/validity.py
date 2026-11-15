@@ -493,6 +493,25 @@ def check_finding(finding: dict, verify: bool = True) -> dict:
                            "reason": "GitHub never returns a secret's "
                                      "value, so liveness cannot be checked",
                            "permissions": [], "method": "github-actions-api"}
+    elif provider == "gcp":
+        if finding["detector"] == "gcp-service-account":
+            from .cloud import check_gcp
+            out["validity"] = check_gcp(secret,
+                                        finding.get("client_email", ""))
+        else:
+            # A GCP API key: whether it works depends on which APIs
+            # are enabled for its project, so a 403 cannot tell a
+            # valid key from an invalid one.
+            out["validity"] = {"live": "unknown",
+                               "reason": "a GCP API key's validity depends "
+                                         "on which APIs are enabled for its "
+                                         "project — a 403 cannot tell a "
+                                         "valid key from an invalid one",
+                               "permissions": [], "method": "none"}
+    elif provider == "azure":
+        from .cloud import check_azure
+        out["validity"] = check_azure(finding.get("tenant_id", ""),
+                                      finding.get("client_id", ""), secret)
     else:
         out["validity"] = {"live": "unknown",
                            "reason": "no validity check for this provider in v0.2",
