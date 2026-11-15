@@ -51,6 +51,16 @@ risk, and tells the owner exactly how to revoke or rotate them.
   branch, commits, and opens the PR. Anything it cannot fix safely
   (a value inside a longer string, a JSON file) is a manual step in
   the PR body, not a guess.
+- **Agent identities.** `keyring-audit agents --gateway <dir>`
+  discovers and scores the AI agent keys an Agent Gateway install
+  governs: the keys file (or `AGENT_KEYS`), the policy directory, and
+  the audit log. Every agent key is a credential — fingerprinted
+  (salted hash + first/last 4, never printed), owned by its agent,
+  scored on what its policy allows and when the audit log last saw
+  it. The audit log's hash chain is verified and the result reported.
+  An agent with no audit entries is a "safe to kill" candidate; an
+  agent with many denied attempts is flagged. `--format json` is the
+  shared identity graph both products can read.
 - **Assign owners.** Every finding names who is responsible: AWS
   Owner/Team tags first, then the commit author, then `git blame` for
   working-tree and staged lines (an uncommitted line names the local
@@ -143,7 +153,7 @@ Example output:
    own is unauthorised access in most jurisdictions — this tool refuses
    to validate a credential it was not given by its owner.
 
-## Honest limits (v0.7)
+## Honest limits (v0.8)
 
 - The staged scan reads added lines only — a secret already in history
   is not the staged diff's business (clean it separately; a full scan
@@ -168,6 +178,13 @@ Example output:
   (`GITHUB_TOKEN`, or one pasted at the prompt); the PR's file diff
   will show the removed line, but that line is already in the repo,
   so the PR exposes it to no one new.
+- Agent identities: the gateway's policy files are read with a focused
+  extractor (agent, risk_tier, the `tool:` lines under `allow:`), not
+  a YAML parser — Keyring Audit stays stdlib-only. If the policy
+  format grows, the extractor is the place to add a real parser. A
+  gateway key's liveness cannot be checked (no provider endpoint
+  checks a gateway key), so it is reported "unknown" and the usage
+  score comes from the audit log, which is the real evidence.
 
 - Validity checks are implemented for GitHub, AWS, Slack, GitLab and
   Stripe. Private keys and JWTs are detected but have no live check —
@@ -189,8 +206,12 @@ Example output:
 
 ## Roadmap
 
-- **Phase 5:** agent identities — discovery and control for AI agent
-  credentials, built on Agent Gateway's per-agent identity model.
+- **Phase 5 (remaining):** deeper Agent Gateway integration — the
+  shared identity graph as a single combined install (Keyring Audit
+  as the discovery half of Agent Gateway), and a live key check
+  against a running gateway.
+- **Phase 6:** coverage — CI/CD variables, SaaS accounts, cloud
+  accounts, container images.
 - **Phase 4:** safe remediation — guided rotation with dry runs and
   approvals, PRs replacing hardcoded keys.
 - **Phase 5:** agent identities, shared with Agent Gateway.

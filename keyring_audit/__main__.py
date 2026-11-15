@@ -1,4 +1,4 @@
-"""Keyring Audit CLI (v0.7).
+"""Keyring Audit CLI (v0.8).
 
     keyring-audit scan <path> [--verify|--no-verify]
                              [--format text|json|md] [--output FILE]
@@ -11,6 +11,10 @@
                          [--execute --approve --old-key-id ID]   (AWS only)
                          [--complete --new-key-id ID --old-key-id ID]
                          [--verify --old-key-id ID [--rotated-at ISO]]
+    keyring-audit fix --fingerprint <fp> [--path DIR] [--approve]
+    keyring-audit agents [--gateway DIR] [--keys-file FILE]
+                         [--policy-dir DIR] [--audit-log FILE ...]
+                         [--format text|json|md]
 
 Rotate is a dry run first: without --execute/--complete/--verify it
 prints the plan and changes nothing. --execute creates and verifies a
@@ -24,6 +28,12 @@ Exit codes: 0 = no live secrets (or all findings below --fail-on),
 (not a git repo, unreadable path, …). Staged mode is the exception:
 any staged credential exits 1, whatever its validity — the hook's job
 is to stop a secret being committed at all.
+
+`agents` is a discovery report, not a gate: it always exits 0. It
+reads an Agent Gateway install — the keys file (or AGENT_KEYS), the
+policy directory, and the audit log — and scores every agent key with
+the same 0–100 components as any other credential. The `--format json`
+output is the shared identity graph both products can read.
 
 The allowlist is a JSON file: {"fingerprints": ["<sha256>", …]} — the
 salted fingerprints of findings to ignore (e.g. a test secret that is
@@ -146,6 +156,17 @@ def build_parser() -> argparse.ArgumentParser:
     fix_p.add_argument("--approve", action="store_true",
                        help="explicit approval to create the branch, commit and PR (required)")
     fix_p.add_argument("--format", choices=["text", "md"], default="text")
+    agents_p = sub.add_parser("agents",
+                              help="discover and score AI agent identities from an Agent Gateway install (Phase 5)")
+    agents_p.add_argument("--gateway", type=Path,
+                          help="Agent Gateway install root (policies at <gateway>/policies, audit logs at <gateway>/data)")
+    agents_p.add_argument("--keys-file", type=Path,
+                          help="gateway --keys-file (JSON: key -> agent id); or set the AGENT_KEYS env var")
+    agents_p.add_argument("--policy-dir", type=Path,
+                          help="policy directory (default: <gateway>/policies)")
+    agents_p.add_argument("--audit-log", type=Path, action="append", dest="audit_logs",
+                          help="audit-log JSONL file (repeatable; default: <gateway>/data/*.jsonl)")
+    agents_p.add_argument("--format", choices=["text", "json", "md"], default="text")
     return ap
 
 
@@ -173,6 +194,8 @@ def scan_main(argv=None) -> int:
         return rotate_main(args)
     if args.command == "fix":
         return fix_main(args)
+    if args.command == "agents":
+        return agents_main(args)
     if args.command != "scan":
         ap.print_help()
         return EXIT_INFRA
@@ -456,6 +479,43 @@ def fix_main(args) -> int:
         sys.stdout.write("Still needs a manual edit:\n")
         for note in fix["manual"]:
             sys.stdout.write(f"  - {note}\n")
+    return EXIT_OK
+
+
+def agents_main(args) -> int:
+    """Discover and score AI agent identities from an Agent Gateway
+    install. A discovery report, not a gate: always exits 0. The keys
+    are read only to fingerprint them (salted hash + first/last 4) and
+    are never printed or stored."""
+    from .agents import (build_agent_identities, load_audit_log, load_keys,
+                         load_policies, render_agents)
+
+    policy_dir = args.policy_dir
+    if policy_dir is None and args.gateway is not None:
+        policy_dir = args.gateway / "policies"
+    if policy_dir is None:
+        log.error("agents needs --gateway or --policy-dir")
+        return EXIT_INFRA
+    try:
+        keys = load_keys(args.keys_file)
+    except (OSError, json.JSONDecodeError, ValueError) as e:
+        log.error("cannot read the agent keys: %s", e)
+        return EXIT_INFRA
+    policies = load_policies(policy_dir)
+    audit_logs = list(args.audit_logs or [])
+    if not audit_logs and args.gateway is not None:
+        data_dir = args.gateway / "data"
+        if data_dir.is_dir():
+            audit_logs = sorted(data_dir.glob("*.jsonl"))
+    audit = load_audit_log(audit_logs)
+    identities = build_agent_identities(keys, policies, audit)
+    if not identities:
+        print("No agent identities found — no policies, no audit trail, "
+              "no keys.")
+        return EXIT_OK
+    sys.stdout.write(render_agents(identities, audit, args.format,
+                                   str(args.gateway or "")))
+    sys.stdout.write("\n")
     return EXIT_OK
 
 

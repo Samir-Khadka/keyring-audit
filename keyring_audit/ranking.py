@@ -46,6 +46,16 @@ def _privilege(finding: dict) -> tuple[int, str]:
     live = validity.get("live")
     permissions = validity.get("permissions", []) or []
     provider = finding["provider"]
+    if provider == "agent-gateway":
+        # Precomputed by agents.py from the gateway policy (allowed
+        # tools + risk_tier) — the ranking must not import agents.
+        # This branch comes first: an agent key's liveness is always
+        # "unknown" (no provider endpoint checks a gateway key), and
+        # the unknown branch would hide the policy-derived score.
+        priv = finding.get("agent_privilege")
+        if priv:
+            return priv
+        return 20, "no policy found — privilege unknown, scored in the middle"
     if live == "dead":
         return 0, "dead credential — nothing to do with it"
     if live in ("unknown", "skipped"):
@@ -113,6 +123,8 @@ def _privilege(finding: dict) -> tuple[int, str]:
 
 def _exposure(finding: dict) -> tuple[int, str]:
     """0–20. Where the credential was found."""
+    if finding.get("exposure_source") == "gateway":
+        return 10, "in the gateway key config — server-side, not committed"
     if finding.get("commit"):
         return 17, "in git history — committed, possibly pushed"
     return 7, "in the working tree only — not committed"

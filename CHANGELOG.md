@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.8.0 — 2026-11-15
+
+Phase 5 (agent identities), first half. The Agent Gateway tie-in:
+every agent key the gateway governs is a Keyring Audit credential,
+and every Gateway policy decision is logged against it.
+
+- `agents --gateway <dir>` discovers and scores the AI agent keys an
+  Agent Gateway install governs — the keys file (or `AGENT_KEYS`),
+  the policy directory, and the audit log. Each agent key is
+  fingerprinted (salted hash + first/last 4, never printed), owned by
+  its agent, and scored with the same 0–100 components as any other
+  credential: privilege from what its policy allows (a tool that can
+  send, refund or delete scores highest) and the risk_tier, usage
+  from the audit log's last-used time, exposure as the gateway key
+  config. 156 tests.
+- The audit log's hash chain is verified (the gateway's own
+  algorithm) and the result reported — a broken chain is itself a
+  finding. An agent with no audit entries is a "safe to kill"
+  candidate; an agent with many denied attempts is flagged (it keeps
+  trying tools its policy denies).
+- `--format json` is the shared identity graph both products can
+  read: gateway, audit-log status, and one record per agent.
+- Honest limit: a gateway key's liveness cannot be checked (no
+  provider endpoint checks a gateway key), so it is reported
+  "unknown" and the usage score comes from the audit log. The policy
+  files are read with a focused extractor, not a YAML parser —
+  Keyring Audit stays stdlib-only.
+
 ## v0.7.0 — 2026-11-15
 
 Phase 4 complete: PR automation. The rotation flow (v0.6) plus this
