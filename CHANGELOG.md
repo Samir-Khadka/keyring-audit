@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.0.0 — 2026-11-15
+
+Phase 6 coverage, first piece: container images. The two repos stay
+separate — Samir's call, recorded here: Keyring Audit and Agent
+Gateway share the identity graph (`agents --format json`), not a repo.
+
+- `scan-image <image.tar>` scans a `docker save` archive for
+  credentials baked into its layers — the same detectors, the same
+  validity checks, the same ranked report as a repo scan. A finding's
+  source is "layer <n>: <file path>", so the fix is obvious: the
+  secret was baked in at that layer. No Docker daemon is needed; a
+  plain tar of files is scanned as a single layer. 171 tests.
+- Image exposure scores 15 (between a working tree at 7 and git
+  history at 17): the secret ships with the image, to anyone who
+  pulls it. A secret that appears in several layers is deduped to its
+  earliest layer — that is the layer to fix. Whiteout files and
+  binary files are skipped; a layer that cannot be read is a warning,
+  not a failure.
+- Dogfood: a two-layer demo image (a GitHub PAT in layer 0, an AWS
+  pair in a gzipped layer 1) — both found, both verified dead against
+  the real providers, with the layer and file named in the report.
+
 ## v0.9.0 — 2026-11-15
 
 Phase 5, second half: the live key check. The remaining Phase 5

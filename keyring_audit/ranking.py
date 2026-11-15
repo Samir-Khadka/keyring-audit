@@ -129,6 +129,9 @@ def _exposure(finding: dict) -> tuple[int, str]:
     """0–20. Where the credential was found."""
     if finding.get("exposure_source") == "gateway":
         return 10, "in the gateway key config — server-side, not committed"
+    if finding.get("exposure_source") == "image":
+        return 15, ("in a container image layer — the secret ships with "
+                    "the image, to anyone who pulls it")
     if finding.get("commit"):
         return 17, "in git history — committed, possibly pushed"
     return 7, "in the working tree only — not committed"

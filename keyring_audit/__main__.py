@@ -1,10 +1,13 @@
-"""Keyring Audit CLI (v0.8).
+"""Keyring Audit CLI (v1.0).
 
     keyring-audit scan <path> [--verify|--no-verify]
                              [--format text|json|md] [--output FILE]
                              [--fail-on N] [--allowlist FILE] [-v]
     keyring-audit scan --repo <url> [--branch B] [same options]
     keyring-audit scan --staged [--no-verify]   (what a commit would add)
+    keyring-audit scan-image <image.tar> [--verify|--no-verify]
+                             [--format text|json|md] [--output FILE]
+                             [--fail-on N]
     keyring-audit install-hook [--path <repo>] [--force]
     keyring-audit rotate --fingerprint <fp> [--report FILE | --path DIR]
                          [--format text|md|json]
@@ -169,6 +172,18 @@ def build_parser() -> argparse.ArgumentParser:
     agents_p.add_argument("--live-check",
                           help="running gateway base URL (e.g. http://127.0.0.1:8000) — check each key against it (POST /mcp with a method the gateway does not support; no tool is called, no audit entry is written)")
     agents_p.add_argument("--format", choices=["text", "json", "md"], default="text")
+    image_p = sub.add_parser("scan-image",
+                             help="scan a container image archive (docker save tar) for credentials baked into its layers")
+    image_p.add_argument("path", type=Path,
+                         help="the image archive (.tar from docker save)")
+    image_p.add_argument("--verify", dest="verify", action="store_true", default=True,
+                         help="check each credential against its provider (default)")
+    image_p.add_argument("--no-verify", dest="verify", action="store_false",
+                         help="skip the provider checks (offline)")
+    image_p.add_argument("--format", choices=["text", "json", "md"], default="text")
+    image_p.add_argument("--output", type=Path, help="write the report here as well as stdout")
+    image_p.add_argument("--fail-on", type=int, default=60,
+                         help="exit 1 when a live credential scores at or above this (default 60)")
     return ap
 
 
@@ -198,6 +213,8 @@ def scan_main(argv=None) -> int:
         return fix_main(args)
     if args.command == "agents":
         return agents_main(args)
+    if args.command == "scan-image":
+        return scan_image_main(args)
     if args.command != "scan":
         ap.print_help()
         return EXIT_INFRA
@@ -519,6 +536,34 @@ def agents_main(args) -> int:
     sys.stdout.write(render_agents(identities, audit, args.format,
                                    str(args.gateway or "")))
     sys.stdout.write("\n")
+    return EXIT_OK
+
+
+def scan_image_main(args) -> int:
+    """Scan a container image archive for credentials baked into its
+    layers. The same pipeline as `scan`: verify each credential
+    against its provider, rank it, render the report. Exit 1 when a
+    live credential scores at or above --fail-on."""
+    from .images import scan_image
+    from .validity import check_finding
+
+    try:
+        result = scan_image(args.path)
+    except ValueError as e:
+        log.error("%s", e)
+        return EXIT_INFRA
+    checked = [check_finding(f, verify=args.verify)
+               for f in result["findings"]]
+    checked = [apply_tag_owner(f) for f in checked]
+    ranked = rank_all(checked)
+    out = render(ranked, result["warnings"], str(args.path), args.format)
+    sys.stdout.write(out)
+    if args.output:
+        args.output.write_text(out)
+    for f in ranked:
+        if (f.get("validity", {}).get("live") == "live"
+                and f["risk"]["score"] >= args.fail_on):
+            return EXIT_FOUND
     return EXIT_OK
 
 

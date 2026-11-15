@@ -67,6 +67,12 @@ risk, and tells the owner exactly how to revoke or rotate them.
   other answer means live, with no tool called and no audit entry
   written; a gateway that cannot be reached leaves the key
   "unknown", never "dead").
+- **Container images.** `keyring-audit scan-image <image.tar>` scans
+  a `docker save` archive for credentials baked into its layers —
+  the same detectors, the same validity checks, the same ranked
+  report. A finding's source is "layer <n>: <file path>", so the fix
+  is obvious: the secret was baked in at that layer. No Docker daemon
+  is needed; a plain tar of files is scanned as a single layer.
 - **Assign owners.** Every finding names who is responsible: AWS
   Owner/Team tags first, then the commit author, then `git blame` for
   working-tree and staged lines (an uncommitted line names the local
@@ -159,7 +165,7 @@ Example output:
    own is unauthorised access in most jurisdictions — this tool refuses
    to validate a credential it was not given by its owner.
 
-## Honest limits (v0.8)
+## Honest limits (v1.0)
 
 - The staged scan reads added lines only — a secret already in history
   is not the staged diff's business (clean it separately; a full scan
@@ -191,6 +197,13 @@ Example output:
   gateway key's liveness comes from the audit log unless
   `--live-check` is given, in which case the running gateway is asked
   directly; the probe calls no tool and writes no audit entry.
+- Container images: the scan reads the image archive only — it cannot
+  pull an image from a registry, and it cannot see credentials that
+  were baked in and then deleted in a later layer (the deleted file
+  is gone from the final image, but its layer still holds it — that
+  is exactly what the scan finds, layer by layer). An image finding
+  has no owner (there is no git history in an image), so it scores 10
+  on ownership — the fix is in the Dockerfile, not in a person.
 
 - Validity checks are implemented for GitHub, AWS, Slack, GitLab and
   Stripe. Private keys and JWTs are detected but have no live check —
@@ -212,12 +225,12 @@ Example output:
 
 ## Roadmap
 
-- **Phase 5 (remaining):** deeper Agent Gateway integration — a single
-  combined install (Keyring Audit as the discovery half of Agent
-  Gateway). The plan flags this as a bigger decision for later; it is
-  Samir's call, not a build step.
-- **Phase 6:** coverage — CI/CD variables, SaaS accounts, cloud
-  accounts, container images.
+- **Phase 6 (remaining):** CI/CD variables (GitHub Actions secrets
+  via the API), SaaS integrations, cloud accounts (GCP, Azure), and
+  Slack/GitLab connectors.
+- **The combined install question is closed:** the two repos stay
+  separate. Keyring Audit and Agent Gateway share the identity graph
+  (`agents --format json`), not a repo.
 - **Phase 4:** safe remediation — guided rotation with dry runs and
   approvals, PRs replacing hardcoded keys.
 - **Phase 5:** agent identities, shared with Agent Gateway.
