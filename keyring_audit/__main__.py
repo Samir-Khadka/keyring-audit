@@ -1,4 +1,4 @@
-"""Keyring Audit CLI (v0.4).
+"""Keyring Audit CLI (v0.5).
 
     keyring-audit scan <path> [--verify|--no-verify]
                              [--format text|json|md] [--output FILE]
@@ -28,6 +28,7 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .ownership import apply_tag_owner
 from .ranking import rank_all
 from .report import render
 from .scanner import scan, scan_remote, scan_staged
@@ -146,6 +147,9 @@ def scan_main(argv=None) -> int:
     findings = [f for f in result["findings"]
                 if f["fingerprint"] not in allowed]
     checked = [check_finding(f, verify=args.verify) for f in findings]
+    # A cloud-tag owner found during validation wins over the commit
+    # author / blame owner attached by the scanner.
+    checked = [apply_tag_owner(f) for f in checked]
     ranked = rank_all(checked)
     out = render(ranked, result["warnings"], scanned_path, args.format)
     sys.stdout.write(out)

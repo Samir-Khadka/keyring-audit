@@ -1,4 +1,4 @@
-"""Report rendering (Keyring Audit v0.4).
+"""Report rendering (Keyring Audit v0.5).
 
 Three formats: text (human), json (machine), md (a report to paste
 into an issue or a PR). All three render from the same ranked findings.
@@ -44,6 +44,11 @@ def render_text(ranked: list[dict], warnings: list[str],
                      + (f":{f['line']}" if f.get("line") else "")
                      + (f" @ {f['commit'][:12]}" if f.get("commit") else "")
                      + (f" by {f['author']}" if f.get("author") else ""))
+        owner = f.get("owner") or {}
+        if owner.get("name"):
+            lines.append(f"   owner: {owner['name']} ({owner.get('source', '?')})")
+        else:
+            lines.append("   owner: none found — nobody to ask to rotate this")
         lines.append(f"   validity: {validity.get('live')} — {validity.get('reason', '')}")
         if validity.get("permissions"):
             lines.append(f"   can do: {', '.join(validity['permissions'])}")
@@ -63,7 +68,9 @@ def render_text(ranked: list[dict], warnings: list[str],
                      f"({risk['components']['privilege']['why']}); "
                      f"exposure {risk['components']['exposure']['score']}; "
                      f"age {risk['components']['age']['score']}; "
-                     f"usage {risk['components']['usage']['score']}")
+                     f"usage {risk['components']['usage']['score']}; "
+                     f"ownership {risk['components']['ownership']['score']} "
+                     f"({risk['components']['ownership']['why']})")
         if risk["safe_to_kill"]:
             lines.append("   safe to kill: yes")
         lines.append("   fix:")
@@ -106,6 +113,11 @@ def render_md(ranked: list[dict], warnings: list[str],
         lines.append("")
         lines.append(f"- Validity: {f.get('validity', {}).get('live')} — "
                      f"{f.get('validity', {}).get('reason', '')}")
+        owner = f.get("owner") or {}
+        lines.append("- Owner: "
+                     + (f"{owner['name']} ({owner.get('source', '?')})"
+                        if owner.get("name")
+                        else "none found — nobody to ask to rotate this"))
         blast = f.get("validity", {}).get("blast_radius") or {}
         if blast.get("method") == "simulate":
             allowed = blast.get("allowed") or []

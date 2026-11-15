@@ -1,4 +1,4 @@
-"""Validity + permissions checks (Keyring Audit v0.4).
+"""Validity + permissions checks (Keyring Audit v0.5).
 
 One identity call per credential proves it is live; a second, read-only
 call lists what it can do. Nothing else is fetched — no data reads, ever.
@@ -214,6 +214,7 @@ def check_aws(key_id: str, secret: str | None,
     permissions: list[str] = []
     method = "sts"
     last_used = None
+    tag_owner: dict | None = None
     if is_user and user_name:
         try:
             import xml.etree.ElementTree as ET
@@ -256,6 +257,24 @@ def check_aws(key_id: str, secret: str | None,
                     "permissions": sim_permissions,
                     "method": "simulate" if sim_permissions else "sts",
                     "identity": identity, "blast_radius": blast_radius}
+        # Owner from cloud tags (best-effort — a missing tag is not an
+        # error, and a key that cannot read IAM never gets here because
+        # the listing above returns early). Applied over the commit
+        # author / blame owner afterwards: the tag names who owns the
+        # IAM user, which is who can rotate the key.
+        try:
+            import xml.etree.ElementTree as ET
+            ns = {"i": "https://iam.amazonaws.com/doc/2010-05-08/"}
+            root = aws_sign.iam_query(key_id, secret, "ListUserTags",
+                                      {"UserName": user_name}, session_token)
+            for tag in root.findall(".//i:TagList/i:member", ns):
+                key = tag.findtext("i:Key", namespaces=ns) or ""
+                value = tag.findtext("i:Value", namespaces=ns) or ""
+                if key.lower() in ("owner", "team") and value:
+                    tag_owner = {"name": value, "source": "aws-tag"}
+                    break
+        except Exception:  # noqa: BLE001 - tags are best-effort
+            tag_owner = None
         # Usage: last-used time for this key.
         try:
             import xml.etree.ElementTree as ET
@@ -275,6 +294,8 @@ def check_aws(key_id: str, secret: str | None,
                     "permissions": permissions + sim_permissions,
                     "method": method,
                     "identity": identity, "blast_radius": blast_radius}
+    if tag_owner:
+        result["owner"] = tag_owner
     if last_used:
         result["last_used"] = last_used
     return result

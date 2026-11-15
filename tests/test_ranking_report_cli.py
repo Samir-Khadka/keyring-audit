@@ -21,6 +21,7 @@ def _finding(**over):
             "redacted": "ghp_…cdef", "fingerprint": "fp1", "source": "config.py",
             "line": 3, "commit": "abc123", "author": "Dev <dev@example.com>",
             "date": 1646138400,  # 2022-03-01
+            "owner": {"name": "Dev <dev@example.com>", "source": "commit"},
             "validity": {"live": "live", "reason": "authenticated as octocat",
                          "permissions": ["repo", "user"], "method": "header"}}
     base.update(over)

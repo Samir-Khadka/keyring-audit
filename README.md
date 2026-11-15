@@ -25,8 +25,14 @@ risk, and tells the owner exactly how to revoke or rotate them.
   actually do even when it cannot read IAM. A simulated "allowed" is
   partial evidence (the simulator does not read resource-based
   policies) and the report says so.
-- **Rank risk.** 0–100 from four measured inputs — privilege, exposure,
-  age, usage — with every component shown, so the score is auditable.
+- **Rank risk.** 0–100 from five measured inputs — privilege, exposure,
+  age, usage, ownership — with every component shown, so the score is
+  auditable. A credential with no owner scores 10 on ownership:
+  nobody to ask to rotate it is itself a risk factor.
+- **Assign owners.** Every finding names who is responsible: AWS
+  Owner/Team tags first, then the commit author, then `git blame` for
+  working-tree and staged lines (an uncommitted line names the local
+  git user). The report shows the owner and how it was found.
 - **Remediate.** A revoke/rotate guide per credential. AWS rotation is
   a two-key rollover (create new → verify → delete old), never
   delete-first.
@@ -115,7 +121,7 @@ Example output:
    own is unauthorised access in most jurisdictions — this tool refuses
    to validate a credential it was not given by its owner.
 
-## Honest limits (v0.4)
+## Honest limits (v0.5)
 
 - The staged scan reads added lines only — a secret already in history
   is not the staged diff's business (clean it separately; a full scan
@@ -126,6 +132,11 @@ Example output:
   simulated "allowed" is partial evidence — the report says so on
   every finding it applies to. When simulation is not permitted, the
   report falls back to the policy names.
+- Ownership is best-effort: `git blame` runs once per working-tree
+  finding (fine for a handful, slow for hundreds), and AWS tags need
+  IAM read. A finding whose owner cannot be determined is reported as
+  "no owner" and scores 10 on ownership — that is the honest answer,
+  not a gap to hide.
 
 - Validity checks are implemented for GitHub, AWS, Slack, GitLab and
   Stripe. Private keys and JWTs are detected but have no live check —
@@ -147,7 +158,8 @@ Example output:
 
 ## Roadmap
 
-- **Phase 3:** ownership (commit history, cloud tags) + the 0–100 score.
+- **Phase 4:** safe remediation — guided rotation with dry runs and
+  approvals, PRs replacing hardcoded keys, post-rotation verification.
 - **Phase 4:** safe remediation — guided rotation with dry runs and
   approvals, PRs replacing hardcoded keys.
 - **Phase 5:** agent identities, shared with Agent Gateway.

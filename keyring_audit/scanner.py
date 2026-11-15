@@ -1,4 +1,4 @@
-"""Repo scanning (Keyring Audit v0.4).
+"""Repo scanning (Keyring Audit v0.5).
 
 Four sources:
 - the working tree (every file except .git/, including gitignored files
@@ -38,6 +38,7 @@ from .detectors import (
     redact,
     scan_line,
 )
+from .ownership import assign_owners
 
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 PAIR_WINDOW = 10  # lines around an AWS key ID to look for its secret
@@ -224,7 +225,8 @@ def scan(root: Path) -> dict:
         elif f["commit"] and (not seen[key]["commit"]
                               or (f["date"] or 0) < (seen[key]["date"] or 0)):
             seen[key] = f
-    return {"path": str(root), "findings": list(seen.values()),
+    findings = assign_owners(list(seen.values()), root)
+    return {"path": str(root), "findings": findings,
             "warnings": tree_warnings + hist_warnings}
 
 
@@ -234,6 +236,7 @@ def scan_staged(root: Path) -> dict:
     hunk headers. Unstaged working-tree changes are not scanned — the
     hook cares about what the commit would actually add."""
     findings, warnings = _scan_diff_cached(root)
+    findings = assign_owners(findings, root)
     return {"path": str(root), "findings": findings, "warnings": warnings}
 
 

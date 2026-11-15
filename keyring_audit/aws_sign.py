@@ -1,4 +1,4 @@
-"""AWS Signature Version 4 signing, stdlib only (Keyring Audit v0.4).
+"""AWS Signature Version 4 signing, stdlib only (Keyring Audit v0.5).
 
 The CLI validates AWS keys without boto3: one signed GET to STS
 (GetCallerIdentity) proves the key is live, and signed POSTs to the IAM

@@ -1,15 +1,17 @@
-"""Risk ranking (Keyring Audit v0.4).
+"""Risk ranking (Keyring Audit v0.5).
 
-Score 0–100, higher = riskier, from four measured inputs. Every
+Score 0–100, higher = riskier, from five measured inputs. Every
 component is shown in the output so the score is auditable, not a black
-box. The weights are the plan's v1 (privilege 40, exposure 30, age 15,
-usage 15); they are a starting point, and the components are what
-matters — a wrong weight is visible and fixable.
+box. The weights are the plan's v1 as rebalanced in Phase 3 (privilege
+40, exposure 20, age 15, usage 15, ownership 10); they are a starting
+point, and the components are what matters — a wrong weight is visible
+and fixable.
 
 Bands: Low <30, Medium 30–59, High 60–79, Critical 80+.
 A finding is "safe to kill" when it is dead, or live but unused for 90+
 days with low privilege — the report flags it, and the remediation guide
-says so.
+says so. A finding with no owner scores 10 on ownership: nobody to ask
+to rotate it is itself a risk factor, not a missing field.
 """
 from __future__ import annotations
 
@@ -110,10 +112,10 @@ def _privilege(finding: dict) -> tuple[int, str]:
 
 
 def _exposure(finding: dict) -> tuple[int, str]:
-    """0–30. Where the credential was found."""
+    """0–20. Where the credential was found."""
     if finding.get("commit"):
-        return 25, "in git history — committed, possibly pushed"
-    return 10, "in the working tree only — not committed"
+        return 17, "in git history — committed, possibly pushed"
+    return 7, "in the working tree only — not committed"
 
 
 def _age(finding: dict) -> tuple[int, str]:
@@ -151,13 +153,24 @@ def _usage(finding: dict) -> tuple[int, str]:
     return 5, f"unused for {days} days — safe to kill"
 
 
+def _ownership(finding: dict) -> tuple[int, str]:
+    """0–10. Is there someone to ask to rotate it? A finding with no
+    owner scores the full 10 — nobody to ask is itself a risk factor,
+    not a missing field."""
+    owner = finding.get("owner") or {}
+    if owner.get("name"):
+        return 0, f"owned by {owner['name']} ({owner.get('source', '?')})"
+    return 10, "no owner found — nobody to ask to rotate this"
+
+
 def rank(finding: dict) -> dict:
     """Score one finding. Returns the finding with a 'risk' dict."""
     p, p_why = _privilege(finding)
     e, e_why = _exposure(finding)
     a, a_why = _age(finding)
     u, u_why = _usage(finding)
-    total = p + e + a + u
+    o, o_why = _ownership(finding)
+    total = p + e + a + u + o
     band = ("Critical" if total >= 80 else "High" if total >= 60
             else "Medium" if total >= 30 else "Low")
     live = finding.get("validity", {}).get("live")
@@ -167,7 +180,8 @@ def rank(finding: dict) -> dict:
                    "components": {"privilege": {"score": p, "why": p_why},
                                   "exposure": {"score": e, "why": e_why},
                                   "age": {"score": a, "why": a_why},
-                                  "usage": {"score": u, "why": u_why}},
+                                  "usage": {"score": u, "why": u_why},
+                                  "ownership": {"score": o, "why": o_why}},
                    "safe_to_kill": safe_to_kill}
     return out
 

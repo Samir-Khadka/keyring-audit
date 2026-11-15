@@ -143,10 +143,18 @@ def test_aws_live_key_lists_policies(monkeypatch):
         '</AccessKeyLastUsed></GetAccessKeyLastUsedResult>'
         '<ResponseMetadata><RequestId>x</RequestId></ResponseMetadata>'
         '</GetAccessKeyLastUsedResponse>')
+    tags = ET.fromstring(
+        '<ListUserTagsResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/">'
+        '<ListUserTagsResult><TagList><member>'
+        '<Key>Team</Key><Value>platform-team</Value>'
+        '</member></TagList><IsTruncated>false</IsTruncated>'
+        '</ListUserTagsResult>'
+        '<ResponseMetadata><RequestId>x</RequestId></ResponseMetadata>'
+        '</ListUserTagsResponse>')
     calls = {"n": 0}
     def fake_query(*a, **k):
         calls["n"] += 1
-        return [attached, inline, last_used][calls["n"] - 1]
+        return [attached, inline, tags, last_used][calls["n"] - 1]
     monkeypatch.setattr(aws_sign, "sts_get_caller_identity", fake_sts)
     monkeypatch.setattr(aws_sign, "iam_query", fake_query)
     # The simulation runs before the policy listing; stub it so the
@@ -161,6 +169,7 @@ def test_aws_live_key_lists_policies(monkeypatch):
     assert r["blast_radius"]["method"] == "simulate"
     assert r["blast_radius"]["allowed"] == ["iam:CreateUser"]
     assert r["blast_radius"]["denied"] == ["s3:DeleteBucket"]
+    assert r["owner"] == {"name": "platform-team", "source": "aws-tag"}
     assert r["last_used"] == "2026-11-14T09:00:00Z"
 
 
@@ -231,10 +240,18 @@ def test_aws_simulation_not_permitted_falls_back_to_policy_names(monkeypatch):
         '</AccessKeyLastUsed></GetAccessKeyLastUsedResult>'
         '<ResponseMetadata><RequestId>x</RequestId></ResponseMetadata>'
         '</GetAccessKeyLastUsedResponse>')
+    tags = ET.fromstring(
+        '<ListUserTagsResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/">'
+        '<ListUserTagsResult><TagList><member>'
+        '<Key>Owner</Key><Value>ada@example.com</Value>'
+        '</member></TagList><IsTruncated>false</IsTruncated>'
+        '</ListUserTagsResult>'
+        '<ResponseMetadata><RequestId>x</RequestId></ResponseMetadata>'
+        '</ListUserTagsResponse>')
     calls = {"n": 0}
     def fake_query(*a, **k):
         calls["n"] += 1
-        return [attached, inline, last_used][calls["n"] - 1]
+        return [attached, inline, tags, last_used][calls["n"] - 1]
     monkeypatch.setattr(aws_sign, "sts_get_caller_identity", fake_sts)
     monkeypatch.setattr(aws_sign, "iam_query", fake_query)
     def denied(*a, **k):
@@ -245,6 +262,7 @@ def test_aws_simulation_not_permitted_falls_back_to_policy_names(monkeypatch):
     assert any("AdministratorAccess" in p for p in r["permissions"])
     assert r["blast_radius"]["method"] == "none"
     assert "not permitted" in r["blast_radius"]["note"]
+    assert r["owner"] == {"name": "ada@example.com", "source": "aws-tag"}
 
 
 def test_simulate_principal_policy_parses_decisions(monkeypatch):

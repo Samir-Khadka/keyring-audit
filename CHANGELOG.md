@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.5.0 — 2026-11-15
+
+Phase 3: ownership. Every finding now names who is responsible for the
+credential — or says plainly that no owner could be found.
+
+- Owner sources, in order: AWS Owner/Team tags (read during the
+  validity check, while the secret is available), the commit author,
+  then `git blame` for working-tree and staged lines. An uncommitted
+  line names the local git user; a file git cannot blame at all falls
+  back to the local user too. 102 tests.
+- "No owner" is a risk factor in the score, not a missing field: the
+  score is now five components — privilege 40, exposure 20, age 15,
+  usage 15, ownership 10. Exposure was rebalanced from 30 to 20 to
+  make room (history 25→17, working tree 10→7); privilege, age and
+  usage are unchanged, and the canonical admin-PAT-in-history finding
+  still scores 80 / Critical.
+- The report shows an `owner:` line on every finding (with the source:
+  aws-tag, commit, or blame) and the ownership component in the risk
+  breakdown.
+
 ## v0.4.0 — 2026-11-15
 
 Phase 2: AWS blast-radius mapping. The GitHub half (scopes / probed
