@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.6.0 — 2026-11-15
+
+Phase 4: safe remediation — the rotation flow. The PR automation
+(replacing a hardcoded key with a vault reference) is the remaining
+Phase 4 piece and is not built yet.
+
+- `rotate --fingerprint <fp>` prints the remediation plan and changes
+  nothing — a dry run first, every time. A credential used in the last
+  24 hours is flagged "ROTATE WITH CARE", with CloudTrail named as the
+  place to check recent callers. 125 tests.
+- `--execute --approve` performs the AWS two-key rollover: create a
+  new access key, verify it answers sts:GetCallerIdentity, print the
+  new secret once (never stored), old key untouched. `--complete`
+  deletes the old key with the new key's credentials and confirms it
+  is gone from the user's key list. Both refuse non-AWS providers,
+  dead keys, and assumed-role principals, and say why.
+- `--verify` re-checks the old credential afterwards: dead means the
+  rotation worked. For AWS with `--rotated-at`, any last-used time
+  after the rotation is flagged — something still holds the old key.
+- The old secret is read from the terminal (hidden) and used once, in
+  memory. The new secret is shown once and never written to a file.
+
 ## v0.5.0 — 2026-11-15
 
 Phase 3: ownership. Every finding now names who is responsible for the

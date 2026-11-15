@@ -1,4 +1,4 @@
-"""Keyring Audit CLI (v0.5).
+"""Keyring Audit CLI (v0.6).
 
     keyring-audit scan <path> [--verify|--no-verify]
                              [--format text|json|md] [--output FILE]
@@ -6,6 +6,18 @@
     keyring-audit scan --repo <url> [--branch B] [same options]
     keyring-audit scan --staged [--no-verify]   (what a commit would add)
     keyring-audit install-hook [--path <repo>] [--force]
+    keyring-audit rotate --fingerprint <fp> [--report FILE | --path DIR]
+                         [--format text|md|json]
+                         [--execute --approve --old-key-id ID]   (AWS only)
+                         [--complete --new-key-id ID --old-key-id ID]
+                         [--verify --old-key-id ID [--rotated-at ISO]]
+
+Rotate is a dry run first: without --execute/--complete/--verify it
+prints the plan and changes nothing. --execute creates and verifies a
+new AWS key (the old key is untouched); --complete deletes the old key
+only after the new one is deployed. The old secret is read from the
+terminal and used once, in memory — never stored, never written to a
+file. The new secret is shown once; save it when it appears.
 
 Exit codes: 0 = no live secrets (or all findings below --fail-on),
 1 = a live secret at or above the fail-on threshold, 2 = infra error
@@ -30,6 +42,13 @@ from pathlib import Path
 from . import __version__
 from .ownership import apply_tag_owner
 from .ranking import rank_all
+from .remediation import (
+    build_plan,
+    complete_aws_rollover,
+    execute_aws_rollover,
+    render_plan,
+    verify_old_credential,
+)
 from .report import render
 from .scanner import scan, scan_remote, scan_staged
 from .validity import check_finding
@@ -88,6 +107,29 @@ def build_parser() -> argparse.ArgumentParser:
                         help="repo to install the hook in (default: current directory)")
     hook_p.add_argument("--force", action="store_true",
                         help="overwrite an existing pre-commit hook")
+    rot_p = sub.add_parser("rotate",
+                           help="plan and perform a safe rotation for one finding (dry run first)")
+    rot_p.add_argument("--fingerprint", required=True,
+                       help="salted fingerprint of the finding (full, or a unique prefix of 8+ chars)")
+    rot_p.add_argument("--report", type=Path,
+                       help="JSON report from a previous scan (default: scan --path now)")
+    rot_p.add_argument("--path", type=Path, default=Path("."),
+                       help="repo to scan when --report is not given (default: current directory)")
+    rot_p.add_argument("--format", choices=["text", "json", "md"], default="text")
+    rot_p.add_argument("--execute", action="store_true",
+                       help="perform the first half of the rollover: create and verify a new AWS key (needs --approve and --old-key-id)")
+    rot_p.add_argument("--approve", action="store_true",
+                       help="explicit approval for --execute (required)")
+    rot_p.add_argument("--complete", action="store_true",
+                       help="delete the old key after the new one is deployed (needs --new-key-id and --old-key-id)")
+    rot_p.add_argument("--new-key-id",
+                       help="the new key id printed by --execute (for --complete)")
+    rot_p.add_argument("--old-key-id",
+                       help="the old key id (for AWS --execute/--complete/--verify)")
+    rot_p.add_argument("--verify", action="store_true",
+                       help="re-check whether the old credential is dead")
+    rot_p.add_argument("--rotated-at",
+                       help="ISO time the rotation completed, for the post-rotation usage check (with --verify)")
     return ap
 
 
@@ -111,6 +153,8 @@ def scan_main(argv=None) -> int:
                         else logging.INFO, format="%(levelname)s %(message)s")
     if args.command == "install-hook":
         return install_hook_main(args)
+    if args.command == "rotate":
+        return rotate_main(args)
     if args.command != "scan":
         ap.print_help()
         return EXIT_INFRA
@@ -164,6 +208,160 @@ def scan_main(argv=None) -> int:
         if (f.get("validity", {}).get("live") == "live"
                 and f["risk"]["score"] >= args.fail_on):
             return EXIT_FOUND
+    return EXIT_OK
+
+
+def _load_rotate_findings(args) -> list[dict]:
+    """Findings for rotate: from a previous JSON report, or a fresh
+    scan (with verification, so the plan knows live/dead and last-used)."""
+    if args.report:
+        try:
+            doc = json.loads(args.report.read_text())
+        except (OSError, json.JSONDecodeError) as e:
+            raise ValueError(f"report {args.report} unreadable: {e}") from None
+        return doc.get("findings", [])
+    if not args.path.is_dir():
+        raise ValueError(f"{args.path} is not a directory")
+    result = scan(args.path)
+    checked = [check_finding(f, verify=True) for f in result["findings"]]
+    return [apply_tag_owner(f) for f in checked]
+
+
+def _find_by_fingerprint(findings: list[dict], fp: str) -> dict:
+    if len(fp) >= 8:
+        matches = [f for f in findings
+                   if f.get("fingerprint", "").startswith(fp)]
+    else:
+        matches = [f for f in findings if f.get("fingerprint") == fp]
+    if not matches:
+        raise ValueError(f"no finding with fingerprint {fp!r}")
+    if len(matches) > 1:
+        raise ValueError(f"fingerprint prefix {fp!r} matches "
+                         f"{len(matches)} findings — use more characters")
+    return matches[0]
+
+
+def _prompt_secret(prompt: str) -> str:
+    """Read a credential from the terminal, hidden. Used once, in
+    memory — never stored, never written anywhere."""
+    import getpass
+
+    value = getpass.getpass(prompt)
+    if not value:
+        raise ValueError("no value entered")
+    return value
+
+
+def rotate_main(args) -> int:
+    modes = sum([args.execute, args.complete, args.verify])
+    if modes > 1:
+        log.error("choose one of --execute, --complete, --verify")
+        return EXIT_INFRA
+    try:
+        findings = _load_rotate_findings(args)
+        finding = _find_by_fingerprint(findings, args.fingerprint)
+    except ValueError as e:
+        log.error("%s", e)
+        return EXIT_INFRA
+    plan = build_plan(finding)
+    if not modes:
+        # Dry run: the plan, and nothing else changes.
+        sys.stdout.write(render_plan(plan, args.format))
+        return EXIT_OK
+    if args.verify:
+        try:
+            value = _prompt_secret(
+                f"Old {finding['provider']} credential (hidden, never "
+                "stored): ")
+            result = verify_old_credential(finding, value,
+                                           old_key_id=args.old_key_id,
+                                           rotated_at=args.rotated_at)
+        except ValueError as e:
+            log.error("%s", e)
+            return EXIT_INFRA
+        if result.get("dead") is None:
+            log.error("%s", result["reason"])
+            return EXIT_INFRA
+        if result["dead"]:
+            sys.stdout.write("The old credential is DEAD — the rotation "
+                             "worked.\n")
+            if result.get("used_after_rotation"):
+                sys.stdout.write(
+                    "WARNING: it was last used at "
+                    f"{result['last_used']}, AFTER the rotation — "
+                    "something still holds the old key. Find and update "
+                    "that caller before calling this done.\n")
+                return EXIT_FOUND
+            return EXIT_OK
+        sys.stdout.write("The old credential is still LIVE — the rotation "
+                         "did not take effect yet. Do not delete anything "
+                         "until it is dead.\n")
+        return EXIT_FOUND
+    if finding["provider"] != "aws":
+        log.error("automated rotation is AWS-only — %s tokens are "
+                  "rotated in the provider's web UI. The plan above is "
+                  "the manual path; use --verify afterwards to confirm "
+                  "the old token is dead.",
+                  finding["provider"])
+        sys.stdout.write(render_plan(plan, args.format))
+        return EXIT_INFRA
+    if args.execute:
+        if not args.approve:
+            log.error("--execute needs --approve: rotation is a real "
+                      "change. Read the plan first (run rotate without "
+                      "--execute), then re-run with --approve.")
+            return EXIT_INFRA
+        if not plan["automated"]:
+            log.error("cannot roll over this key: %s",
+                      "it is dead — nothing to rotate"
+                      if finding.get("validity", {}).get("live") == "dead"
+                      else "it is an assumed-role credential, which has "
+                           "no access keys")
+            return EXIT_INFRA
+        if not args.old_key_id:
+            log.error("--execute needs --old-key-id (the key id is an "
+                      "identifier, not a secret — it is in the AWS console "
+                      "and in the file the finding came from)")
+            return EXIT_INFRA
+        for w in plan["warnings"]:
+            log.warning("%s", w)
+        try:
+            old_secret = _prompt_secret("Old AWS secret (hidden, never "
+                                        "stored): ")
+            out = execute_aws_rollover(finding, args.old_key_id, old_secret)
+        except ValueError as e:
+            log.error("%s", e)
+            return EXIT_INFRA
+        sys.stdout.write(
+            "New key created and verified live:\n"
+            f"  key id: {out['new_key_id']}\n"
+            f"  secret: {out['new_secret']}\n"
+            "SAVE THE SECRET NOW — AWS shows it once, and this tool "
+            "never stores it.\n"
+            "Update every application and config to the new key, confirm "
+            "it works, then finish with:\n"
+            f"  keyring-audit rotate --fingerprint {finding['fingerprint']} "
+            f"--complete --new-key-id {out['new_key_id']} "
+            f"--old-key-id {args.old_key_id}\n")
+        return EXIT_OK
+    # --complete
+    if not args.new_key_id or not args.old_key_id:
+        log.error("--complete needs --new-key-id and --old-key-id")
+        return EXIT_INFRA
+    try:
+        new_secret = _prompt_secret("New AWS secret (hidden, never "
+                                    "stored): ")
+        out = complete_aws_rollover(finding, args.old_key_id,
+                                    args.new_key_id, new_secret)
+    except ValueError as e:
+        log.error("%s", e)
+        return EXIT_INFRA
+    if not out["deleted"]:
+        log.error("%s", out["reason"])
+        return EXIT_INFRA
+    sys.stdout.write("Old key deleted and confirmed gone from the user's "
+                     "key list. Re-run the scan to confirm it no longer "
+                     "appears.\n")
     return EXIT_OK
 
 

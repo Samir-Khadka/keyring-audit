@@ -1,4 +1,4 @@
-"""AWS Signature Version 4 signing, stdlib only (Keyring Audit v0.5).
+"""AWS Signature Version 4 signing, stdlib only (Keyring Audit v0.6).
 
 The CLI validates AWS keys without boto3: one signed GET to STS
 (GetCallerIdentity) proves the key is live, and signed POSTs to the IAM
@@ -149,6 +149,49 @@ def simulate_principal_policy(access_key: str, secret_key: str, arn: str,
         out.append({"action": m.findtext("i:EvalActionName", namespaces=ns),
                     "decision": m.findtext("i:EvalDecision", namespaces=ns)})
     return out
+
+
+def create_access_key(access_key: str, secret_key: str, user_name: str,
+                      session_token: str | None = None) -> dict:
+    """Create a new access key for an IAM user (the first half of a
+    two-key rollover). Returns {"key_id": ..., "secret": ...}.
+    The secret is returned ONCE by AWS — the caller must show it to the
+    user and never store it. Raises ValueError on a 403."""
+    import xml.etree.ElementTree as ET
+
+    root = iam_query(access_key, secret_key, "CreateAccessKey",
+                     {"UserName": user_name}, session_token)
+    ns = {"i": "https://iam.amazonaws.com/doc/2010-05-08/"}
+    key = root.find(".//i:AccessKey", ns)
+    if key is None:
+        raise ValueError("CreateAccessKey returned no key")
+    return {"key_id": key.findtext("i:AccessKeyId", namespaces=ns),
+            "secret": key.findtext("i:SecretAccessKey", namespaces=ns)}
+
+
+def delete_access_key(access_key: str, secret_key: str, user_name: str,
+                      key_id: str,
+                      session_token: str | None = None) -> None:
+    """Delete an access key (the second half of a two-key rollover).
+    Raises ValueError on a 403. A key can delete itself only if it has
+    iam:DeleteAccessKey; otherwise this fails and the caller must say
+    to delete it from the AWS console."""
+    iam_query(access_key, secret_key, "DeleteAccessKey",
+              {"UserName": user_name, "AccessKeyId": key_id}, session_token)
+
+
+def list_access_keys(access_key: str, secret_key: str, user_name: str,
+                     session_token: str | None = None) -> list[str]:
+    """List an IAM user's access key IDs (used to confirm a deleted
+    key is really gone). Raises ValueError on a 403."""
+    import xml.etree.ElementTree as ET
+
+    root = iam_query(access_key, secret_key, "ListAccessKeys",
+                     {"UserName": user_name}, session_token)
+    ns = {"i": "https://iam.amazonaws.com/doc/2010-05-08/"}
+    return [m.findtext("i:AccessKeyId", namespaces=ns)
+            for m in root.findall(".//i:AccessKeyMetadata/i:member", ns)
+            if m.findtext("i:AccessKeyId", namespaces=ns)]
 
 
 def iam_query(access_key: str, secret_key: str, action: str,

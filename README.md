@@ -29,6 +29,17 @@ risk, and tells the owner exactly how to revoke or rotate them.
   age, usage, ownership — with every component shown, so the score is
   auditable. A credential with no owner scores 10 on ownership:
   nobody to ask to rotate it is itself a risk factor.
+- **Rotate safely.** `keyring-audit rotate --fingerprint <fp>` prints
+  the remediation plan and changes nothing (dry run first). With
+  `--execute --approve` it performs the AWS two-key rollover — create
+  and verify a new key, old key untouched — and prints the new secret
+  once. `--complete` deletes the old key only after the new one is
+  deployed, and confirms it is gone. `--verify` re-checks the old
+  credential afterwards, and flags any use after the rotation time.
+  GitHub, Slack, GitLab and Stripe are manual steps (no provider API
+  can create or revoke those tokens from the CLI) with the same
+  `--verify` afterwards. The old secret is read from the terminal and
+  used once, in memory — never stored, never written to a file.
 - **Assign owners.** Every finding names who is responsible: AWS
   Owner/Team tags first, then the commit author, then `git blame` for
   working-tree and staged lines (an uncommitted line names the local
@@ -121,7 +132,7 @@ Example output:
    own is unauthorised access in most jurisdictions — this tool refuses
    to validate a credential it was not given by its owner.
 
-## Honest limits (v0.5)
+## Honest limits (v0.6)
 
 - The staged scan reads added lines only — a secret already in history
   is not the staged diff's business (clean it separately; a full scan
@@ -137,6 +148,11 @@ Example output:
   IAM read. A finding whose owner cannot be determined is reported as
   "no owner" and scores 10 on ownership — that is the honest answer,
   not a gap to hide.
+- Rotation is AWS-only for automation, and only for IAM users (an
+  assumed-role credential has no access keys to create). The PR
+  automation — a pull request that replaces a hardcoded key with a
+  vault reference or a short-lived credential — is the remaining
+  Phase 4 piece and is not built yet.
 
 - Validity checks are implemented for GitHub, AWS, Slack, GitLab and
   Stripe. Private keys and JWTs are detected but have no live check —
@@ -158,8 +174,11 @@ Example output:
 
 ## Roadmap
 
-- **Phase 4:** safe remediation — guided rotation with dry runs and
-  approvals, PRs replacing hardcoded keys, post-rotation verification.
+- **Phase 4 (remaining):** PR automation — a pull request that
+  replaces a hardcoded key with a vault reference or a short-lived
+  credential.
+- **Phase 5:** agent identities — discovery and control for AI agent
+  credentials, built on Agent Gateway's per-agent identity model.
 - **Phase 4:** safe remediation — guided rotation with dry runs and
   approvals, PRs replacing hardcoded keys.
 - **Phase 5:** agent identities, shared with Agent Gateway.
