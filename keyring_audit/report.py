@@ -1,4 +1,4 @@
-"""Report rendering (Keyring Audit v0.1).
+"""Report rendering (Keyring Audit v0.2).
 
 Three formats: text (human), json (machine), md (a report to paste
 into an issue or a PR). All three render from the same ranked findings.
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 
+from . import __version__
 from .remediation import guide
 
 
@@ -65,7 +66,7 @@ def render_text(ranked: list[dict], warnings: list[str],
 
 def render_json(ranked: list[dict], warnings: list[str],
                 scanned_path: str) -> str:
-    doc = {"tool": "keyring-audit", "version": "0.1.0",
+    doc = {"tool": "keyring-audit", "version": __version__,
            "path": scanned_path, "warnings": warnings,
            "findings": [public_finding(f) for f in ranked]}
     return json.dumps(doc, indent=2) + "\n"

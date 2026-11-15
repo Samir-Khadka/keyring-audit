@@ -92,23 +92,29 @@ Example output:
    own is unauthorised access in most jurisdictions — this tool refuses
    to validate a credential it was not given by its owner.
 
-## Honest limits (v0.1)
+## Honest limits (v0.2)
 
-- GitHub and AWS validity checks are implemented. Slack, GitLab and
-  Stripe are detected but their validity checks land in v0.2.
+- Validity checks are implemented for GitHub, AWS, Slack, GitLab and
+  Stripe. Private keys and JWTs are detected but have no live check —
+  a private key is validated by what it unlocks, not by an API call.
 - Fine-grained GitHub tokens are probed, not listed — the report says
   so, and a probed "no permissions found" is not the same as "no
   permissions".
 - AWS permissions need IAM read; when the key cannot read IAM, the
   report says "permissions unknown (IAM read denied)" instead of
   guessing. The policy simulator does not read resource-based policies.
+- Stripe exposes no permissions list for a key via the API: the report
+  names the key type (full secret key vs restricted key) instead of
+  inventing one. A restricted key that cannot read the account is
+  reported live-but-restricted, not dead.
+- GitLab group/project tokens cannot be described by the self endpoint;
+  the report falls back to `GET /user` and says the scopes are unlisted.
 - The history scan reads added lines only, skips binary files and
   files over 10 MB, and a shallow clone only covers the fetched history.
 
 ## Roadmap
 
-- **v0.2:** Slack/GitLab/Stripe validity, `keyring-audit scan --repo`
-  for a remote repo, pre-commit hook.
+- **v0.3:** `keyring-audit scan --repo` for a remote repo, pre-commit hook.
 - **Phase 2:** full blast-radius mapping (AWS policy simulation for
   named high-risk actions).
 - **Phase 3:** ownership (commit history, cloud tags) + the 0–100 score.

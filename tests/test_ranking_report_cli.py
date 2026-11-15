@@ -64,6 +64,55 @@ def test_rank_all_sorts_highest_first():
     assert ordered[1]["risk"]["score"] == low["risk"]["score"]
 
 
+# ---------------------------------------------------------------- v0.2 providers
+def test_slack_write_scope_scores_high():
+    r = rank(_finding(provider="slack",
+                      validity={"live": "live", "reason": "x",
+                                "permissions": ["channels:read", "chat:write"],
+                                "method": "auth.test"}))
+    assert r["risk"]["components"]["privilege"]["score"] == 35
+
+
+def test_slack_read_only_scope_scores_lower():
+    r = rank(_finding(provider="slack",
+                      validity={"live": "live", "reason": "x",
+                                "permissions": ["channels:read"],
+                                "method": "auth.test"}))
+    assert r["risk"]["components"]["privilege"]["score"] == 20
+
+
+def test_gitlab_api_scope_scores_max():
+    r = rank(_finding(provider="gitlab",
+                      validity={"live": "live", "reason": "x",
+                                "permissions": ["api", "read_user"],
+                                "method": "self"}))
+    assert r["risk"]["components"]["privilege"]["score"] == 40
+
+
+def test_gitlab_read_only_scope_scores_low():
+    r = rank(_finding(provider="gitlab",
+                      validity={"live": "live", "reason": "x",
+                                "permissions": ["read_user"],
+                                "method": "self"}))
+    assert r["risk"]["components"]["privilege"]["score"] == 15
+
+
+def test_stripe_full_secret_key_scores_max():
+    r = rank(_finding(provider="stripe",
+                      validity={"live": "live", "reason": "x",
+                                "permissions": ["full secret key"],
+                                "method": "account"}))
+    assert r["risk"]["components"]["privilege"]["score"] == 40
+
+
+def test_stripe_restricted_key_scores_mid():
+    r = rank(_finding(provider="stripe",
+                      validity={"live": "live", "reason": "x",
+                                "permissions": ["restricted key"],
+                                "method": "account"}))
+    assert r["risk"]["components"]["privilege"]["score"] == 25
+
+
 # ---------------------------------------------------------------- remediation
 def test_github_guide_names_the_revoke_page():
     steps = guide(_finding())
@@ -136,10 +185,20 @@ def test_cli_no_verify_exits_zero_below_threshold(capsys, fixture_repo):
 
 def test_cli_exits_one_when_a_live_finding_scores_high(monkeypatch, capsys, fixture_repo):
     # Fake the GitHub check as live with admin scope, so the CLI exits 1.
+    # The other providers are faked as unknown so the test stays offline.
     from keyring_audit import validity
     monkeypatch.setattr(validity, "check_github", lambda token, request=None: {
         "live": "live", "reason": "authenticated as octocat",
         "permissions": ["repo"], "method": "header"})
+    monkeypatch.setattr(validity, "check_slack", lambda token, request=None: {
+        "live": "unknown", "reason": "offline", "permissions": [],
+        "method": "auth.test"})
+    monkeypatch.setattr(validity, "check_gitlab", lambda token, request=None: {
+        "live": "unknown", "reason": "offline", "permissions": [],
+        "method": "self"})
+    monkeypatch.setattr(validity, "check_stripe", lambda key, request=None: {
+        "live": "unknown", "reason": "offline", "permissions": [],
+        "method": "account"})
     assert scan_main(["scan", str(fixture_repo), "--fail-on", "60"]) == 1
 
 

@@ -1,4 +1,4 @@
-"""Validity + permissions checks (Keyring Audit v0.1).
+"""Validity + permissions checks (Keyring Audit v0.2).
 
 One identity call per credential proves it is live; a second, read-only
 call lists what it can do. Nothing else is fetched — no data reads, ever.
@@ -26,6 +26,30 @@ AWS (verified against the AWS docs pattern, 2026-11-15):
 - A key without IAM read gets "unknown (IAM read denied)" — never a
   guessed permission list.
 
+Slack (verified against Slack's OAuth docs, 2026-11-15):
+- `POST /api/auth.test` = validity. Slack returns HTTP 200 even for a
+  bad token, so the `ok` field decides: `ok: true` = live,
+  `ok: false, error: invalid_auth` = dead.
+- Every Web API response carries an `X-OAuth-Scopes` header listing the
+  token's granted scopes — the permissions list. 429 = rate limited.
+
+GitLab (verified against GitLab's API docs, 2026-11-15):
+- `GET /api/v4/personal_access_tokens/self` = validity + permissions in
+  one call: `scopes` (array), `active`, `revoked`, `expires_at`.
+  Introduced in GitLab 15.5; verified on gitlab.com.
+- Fallback for tokens the self endpoint cannot describe (group/project
+  tokens, older GitLab): `GET /api/v4/user` — 200 = live, 401 = dead,
+  scopes unlisted (the report says so).
+
+Stripe (verified 2026-11-15):
+- `GET /v1/account` = validity (the identity call). 200 = live, with
+  the account id + livemode. 401 "Invalid API Key provided" = dead.
+- 403 after authentication = the key is live but restricted and cannot
+  read the account — reported as live, restricted. Stripe exposes no
+  permissions list for a key via the API, so the report says the key
+  type (full secret key vs restricted key) instead of inventing one.
+- Auth is HTTP Basic (key as username) or Bearer; Basic is used here.
+
 The HTTP layer is injectable (`request` argument) so tests can pass a
 fake without touching the network. The default uses urllib with a
 15-second timeout. No secret is ever logged: the token travels only in
@@ -33,14 +57,17 @@ the Authorization header of its own provider's call.
 """
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import urllib.error
 import urllib.request
 
-from . import aws_sign
+from . import __version__, aws_sign
 
 log = logging.getLogger("keyring-audit.validity")
+
+USER_AGENT = f"keyring-audit/{__version__}"
 
 GITHUB_API = "https://api.github.com"
 
@@ -72,13 +99,18 @@ def _http(method: str, url: str, headers: dict[str, str] | None = None,
         return e.code, e.read(), {k.lower(): v for k, v in e.headers.items()}
     except urllib.error.URLError as e:
         raise ConnectionError(str(e)) from None
+    except (TimeoutError, OSError) as e:
+        # A raw socket timeout escapes urlopen unwrapped — treat it like
+        # any other network failure so a scan degrades to "unknown"
+        # instead of crashing on one unreachable provider.
+        raise ConnectionError(str(e)) from None
 
 
 def check_github(token: str, request=_http) -> dict:
     """Validate a GitHub token. Returns validity + permissions."""
     headers = {"Authorization": f"Bearer {token}",
                "Accept": "application/vnd.github+json",
-               "User-Agent": "keyring-audit/0.1"}
+               "User-Agent": USER_AGENT}
     try:
         status, body, resp_headers = request("GET", f"{GITHUB_API}/user", headers)
     except ConnectionError as e:
@@ -200,6 +232,168 @@ def check_aws(key_id: str, secret: str | None,
     return result
 
 
+def check_slack(token: str, request=_http) -> dict:
+    """Validate a Slack token via auth.test. Returns validity + scopes.
+
+    Slack returns HTTP 200 even for a bad token — the `ok` field is the
+    verdict. Scopes come from the X-OAuth-Scopes response header, the
+    same mechanism Slack's own docs describe.
+    """
+    headers = {"Authorization": f"Bearer {token}",
+               "User-Agent": USER_AGENT}
+    try:
+        status, body, resp_headers = request(
+            "POST", "https://slack.com/api/auth.test", headers)
+    except ConnectionError as e:
+        return {"live": "unknown", "reason": f"network error: {e}",
+                "permissions": [], "method": "auth.test"}
+    if status == 429:
+        return {"live": "unknown", "reason": "rate limited (429)",
+                "permissions": [], "method": "auth.test"}
+    if status != 200:
+        return {"live": "unknown", "reason": f"Slack returned HTTP {status}",
+                "permissions": [], "method": "auth.test"}
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return {"live": "unknown", "reason": "Slack returned an unreadable response",
+                "permissions": [], "method": "auth.test"}
+    if not data.get("ok"):
+        error = data.get("error", "unknown error")
+        if error == "invalid_auth":
+            return {"live": "dead",
+                    "reason": "invalid_auth (revoked, expired, or invalid)",
+                    "permissions": [], "method": "auth.test"}
+        return {"live": "unknown", "reason": f"Slack error: {error}",
+                "permissions": [], "method": "auth.test"}
+    scopes = resp_headers.get("x-oauth-scopes", "") or ""
+    permissions = [s.strip() for s in scopes.split(",") if s.strip()]
+    return {"live": "live",
+            "reason": f"authenticated as {data.get('user', '?')} "
+                      f"in team {data.get('team', '?')}",
+            "permissions": permissions, "method": "auth.test",
+            "team": data.get("team"), "user": data.get("user")}
+
+
+def check_gitlab(token: str, request=_http) -> dict:
+    """Validate a GitLab token. Returns validity + scopes.
+
+    Primary: GET /personal_access_tokens/self (GitLab 15.5+) returns the
+    token's scopes, active flag, revoked flag and expiry in one call.
+    Fallback for tokens it cannot describe (group/project tokens, older
+    GitLab): GET /user — 200 = live, 401 = dead, scopes unlisted.
+    """
+    headers = {"Authorization": f"Bearer {token}",
+               "User-Agent": USER_AGENT}
+    try:
+        status, body, _ = request(
+            "GET", "https://gitlab.com/api/v4/personal_access_tokens/self",
+            headers)
+    except ConnectionError as e:
+        return {"live": "unknown", "reason": f"network error: {e}",
+                "permissions": [], "method": "self"}
+    if status == 401:
+        return {"live": "dead",
+                "reason": "401 Unauthorized (revoked, expired, or invalid)",
+                "permissions": [], "method": "self"}
+    if status == 429:
+        return {"live": "unknown", "reason": "rate limited (429)",
+                "permissions": [], "method": "self"}
+    if status == 200:
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError:
+            return {"live": "unknown",
+                    "reason": "GitLab returned an unreadable response",
+                    "permissions": [], "method": "self"}
+        if data.get("revoked") or data.get("active") is False:
+            return {"live": "dead", "reason": "token is revoked or inactive",
+                    "permissions": [], "method": "self"}
+        result: dict = {
+            "live": "live",
+            "reason": f"authenticated (token '{data.get('name', '?')}')",
+            "permissions": list(data.get("scopes") or []),
+            "method": "self"}
+        if data.get("expires_at"):
+            result["expires_at"] = data["expires_at"]
+        return result
+    if status not in (403, 404):
+        return {"live": "unknown", "reason": f"GitLab returned HTTP {status}",
+                "permissions": [], "method": "self"}
+    # The self endpoint cannot describe this token — fall back to /user.
+    try:
+        s2, b2, _ = request("GET", "https://gitlab.com/api/v4/user", headers)
+    except ConnectionError as e:
+        return {"live": "unknown", "reason": f"network error: {e}",
+                "permissions": [], "method": "user"}
+    if s2 == 401:
+        return {"live": "dead", "reason": "401 Unauthorized",
+                "permissions": [], "method": "user"}
+    if s2 == 429:
+        return {"live": "unknown", "reason": "rate limited (429)",
+                "permissions": [], "method": "user"}
+    if s2 != 200:
+        return {"live": "unknown", "reason": f"GitLab returned HTTP {s2}",
+                "permissions": [], "method": "user"}
+    try:
+        user = json.loads(b2)
+    except json.JSONDecodeError:
+        user = {}
+    return {"live": "live",
+            "reason": f"authenticated as {user.get('username', '?')} "
+                      "(scopes not listed — group/project token or older GitLab)",
+            "permissions": [], "method": "user",
+            "login": user.get("username")}
+
+
+def check_stripe(key: str, request=_http) -> dict:
+    """Validate a Stripe secret/restricted key via GET /v1/account.
+
+    200 = live (account id + livemode). 401 "Invalid API Key provided"
+    = dead. 403 after authentication = the key is live but restricted
+    and cannot read the account. Stripe exposes no permissions list for
+    a key via the API, so the report names the key type (full secret key
+    vs restricted key) instead of inventing one.
+    """
+    basic = base64.b64encode(f"{key}:".encode()).decode()
+    headers = {"Authorization": f"Basic {basic}",
+               "User-Agent": USER_AGENT}
+    try:
+        status, body, _ = request(
+            "GET", "https://api.stripe.com/v1/account", headers)
+    except ConnectionError as e:
+        return {"live": "unknown", "reason": f"network error: {e}",
+                "permissions": [], "method": "account"}
+    if status == 401:
+        return {"live": "dead",
+                "reason": "401 Invalid API Key (revoked, rolled, or mistyped)",
+                "permissions": [], "method": "account"}
+    if status == 429:
+        return {"live": "unknown", "reason": "rate limited (429)",
+                "permissions": [], "method": "account"}
+    if status == 403:
+        return {"live": "live",
+                "reason": "authenticated but restricted — this key cannot "
+                          "read the account (restricted key)",
+                "permissions": ["restricted key"], "method": "account"}
+    if status != 200:
+        return {"live": "unknown", "reason": f"Stripe returned HTTP {status}",
+                "permissions": [], "method": "account"}
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return {"live": "unknown",
+                "reason": "Stripe returned an unreadable response",
+                "permissions": [], "method": "account"}
+    key_type = "restricted key" if key.startswith("rk_") else "full secret key"
+    return {"live": "live",
+            "reason": f"authenticated (account {data.get('id', '?')}, "
+                      f"{'live' if data.get('livemode') else 'test'} mode, "
+                      f"{key_type})",
+            "permissions": [key_type], "method": "account",
+            "account": data.get("id")}
+
+
 def check_finding(finding: dict, verify: bool = True) -> dict:
     """Run the validity check for one finding. Returns the finding with
     a 'validity' dict attached. When verify is False, validity is 'skipped'."""
@@ -216,20 +410,13 @@ def check_finding(finding: dict, verify: bool = True) -> dict:
     elif provider == "aws":
         out["validity"] = check_aws(finding.get("key_id", ""), secret)
     elif provider == "slack":
-        out["validity"] = {"live": "unknown",
-                           "reason": "Slack validity check not implemented in v0.1 "
-                                     "(auth.test needs the token; coming in v0.2)",
-                           "permissions": [], "method": "none"}
+        out["validity"] = check_slack(secret)
     elif provider == "gitlab":
-        out["validity"] = {"live": "unknown",
-                           "reason": "GitLab validity check not implemented in v0.1",
-                           "permissions": [], "method": "none"}
+        out["validity"] = check_gitlab(secret)
     elif provider == "stripe":
-        out["validity"] = {"live": "unknown",
-                           "reason": "Stripe validity check not implemented in v0.1",
-                           "permissions": [], "method": "none"}
+        out["validity"] = check_stripe(secret)
     else:
         out["validity"] = {"live": "unknown",
-                           "reason": "no validity check for this provider in v0.1",
+                           "reason": "no validity check for this provider in v0.2",
                            "permissions": [], "method": "none"}
     return out

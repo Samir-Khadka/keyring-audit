@@ -1,4 +1,4 @@
-"""Risk ranking (Keyring Audit v0.1).
+"""Risk ranking (Keyring Audit v0.2).
 
 Score 0–100, higher = riskier, from four measured inputs. Every
 component is shown in the output so the score is auditable, not a black
@@ -23,6 +23,11 @@ GITHUB_WRITE_SCOPES = {"write:org", "write:public_key", "write:repo_hook",
                        "write:discussion", "gist", "user", "admin:public_key"}
 
 AWS_ADMIN_POLICIES = ("AdministratorAccess",)
+
+# GitLab scopes that mean full account control.
+GITLAB_ADMIN_SCOPES = {"api", "sudo", "admin_mode"}
+GITLAB_WRITE_SCOPES = {"write_repository", "write_registry", "write_user",
+                       "create_runner", "manage_runner", "ai_features"}
 
 
 def _privilege(finding: dict) -> tuple[int, str]:
@@ -56,6 +61,28 @@ def _privilege(finding: dict) -> tuple[int, str]:
         if not permissions:
             return 20, "permissions unknown (IAM read denied)"
         return 15, "limited permissions listed"
+    if provider == "slack":
+        scopes = set(permissions)
+        if not scopes:
+            return 15, "scopes not listed by Slack"
+        if any(s.endswith(":write") or s.startswith("admin") for s in scopes):
+            return 35, f"write scopes: {', '.join(sorted(scopes))}"
+        return 20, f"read-only scopes: {', '.join(sorted(scopes))}"
+    if provider == "gitlab":
+        scopes = set(permissions)
+        if scopes & GITLAB_ADMIN_SCOPES:
+            return 40, f"admin scope: {sorted(scopes & GITLAB_ADMIN_SCOPES)}"
+        if scopes & GITLAB_WRITE_SCOPES:
+            return 30, f"write scopes: {sorted(scopes & GITLAB_WRITE_SCOPES)}"
+        if scopes:
+            return 15, f"read scopes: {', '.join(sorted(scopes))}"
+        return 20, "scopes not listed (group/project token or older GitLab)"
+    if provider == "stripe":
+        if "full secret key" in permissions:
+            return 40, "full secret key — can do anything in the account"
+        if "restricted key" in permissions:
+            return 25, "restricted key — limited, exact limits not visible via the API"
+        return 20, "key type unknown"
     return 20, "privilege unknown for this provider"
 
 

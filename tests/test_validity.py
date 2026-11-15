@@ -5,7 +5,8 @@ from datetime import datetime, timezone
 import pytest
 
 from keyring_audit import aws_sign
-from keyring_audit.validity import check_aws, check_finding, check_github
+from keyring_audit.validity import (check_aws, check_finding, check_github,
+                                    check_gitlab, check_slack, check_stripe)
 
 GITHUB_PAT = "ghp_" + "1234567890abcdefghij1234567890abcdef"
 AWS_KEY_ID = "AKIAIOSFOD" + "NN7EXAMPLE"
@@ -188,3 +189,181 @@ def test_check_finding_unknown_provider_is_unknown():
                "commit": None, "author": None, "date": None, "_secret": "y"}
     out = check_finding(finding, verify=True)
     assert out["validity"]["live"] == "unknown"
+
+
+# ---------------------------------------------------------------- Slack (v0.2)
+SLACK_TOKEN = "xoxb-" + "FAKE-TOKEN-FOR-TEST"
+GITLAB_TOKEN = "glpat-" + "FAKE-TOKEN-FOR-TEST"
+STRIPE_TEST_KEY = "sk_test_" + "FAKE"
+STRIPE_LIVE_KEY = "sk_live_" + "FAKE"
+STRIPE_RESTRICTED_KEY = "rk_live_" + "FAKE"
+
+
+def test_slack_live_returns_scopes_from_header():
+    fake = _fake_github({
+        ("POST", "https://slack.com/api/auth.test"): (
+            200, json.dumps({"ok": True, "user": "bot", "team": "acme"}),
+            {"x-oauth-scopes": "channels:read,chat:write"}),
+    })
+    r = check_slack(SLACK_TOKEN, request=fake)
+    assert r["live"] == "live"
+    assert r["permissions"] == ["channels:read", "chat:write"]
+    assert r["method"] == "auth.test"
+    assert r["user"] == "bot"
+    assert r["team"] == "acme"
+
+
+def test_slack_invalid_auth_is_dead():
+    # Slack returns HTTP 200 even for a bad token — ok: false decides.
+    fake = _fake_github({
+        ("POST", "https://slack.com/api/auth.test"): (
+            200, json.dumps({"ok": False, "error": "invalid_auth"}), {}),
+    })
+    assert check_slack(SLACK_TOKEN, request=fake)["live"] == "dead"
+
+
+def test_slack_other_error_is_unknown_not_dead():
+    fake = _fake_github({
+        ("POST", "https://slack.com/api/auth.test"): (
+            200, json.dumps({"ok": False, "error": "account_inactive"}), {}),
+    })
+    assert check_slack(SLACK_TOKEN, request=fake)["live"] == "unknown"
+
+
+def test_slack_429_is_unknown():
+    fake = _fake_github({
+        ("POST", "https://slack.com/api/auth.test"): (429, b"", {}),
+    })
+    assert check_slack(SLACK_TOKEN, request=fake)["live"] == "unknown"
+
+
+def test_slack_network_error_is_unknown():
+    def failing(method, url, headers=None, timeout=15):
+        raise ConnectionError("no network")
+    assert check_slack(SLACK_TOKEN, request=failing)["live"] == "unknown"
+
+
+# ---------------------------------------------------------------- GitLab (v0.2)
+def test_gitlab_self_returns_scopes_and_expiry():
+    fake = _fake_github({
+        ("GET", "https://gitlab.com/api/v4/personal_access_tokens/self"): (
+            200, json.dumps({"id": 1, "name": "ci", "scopes": ["api", "read_user"],
+                             "active": True, "revoked": False,
+                             "expires_at": "2027-01-01"}), {}),
+    })
+    r = check_gitlab(GITLAB_TOKEN, request=fake)
+    assert r["live"] == "live"
+    assert r["permissions"] == ["api", "read_user"]
+    assert r["method"] == "self"
+    assert r["expires_at"] == "2027-01-01"
+
+
+def test_gitlab_401_is_dead():
+    fake = _fake_github({
+        ("GET", "https://gitlab.com/api/v4/personal_access_tokens/self"): (401, b"{}", {}),
+    })
+    assert check_gitlab(GITLAB_TOKEN, request=fake)["live"] == "dead"
+
+
+def test_gitlab_revoked_token_is_dead():
+    fake = _fake_github({
+        ("GET", "https://gitlab.com/api/v4/personal_access_tokens/self"): (
+            200, json.dumps({"id": 1, "name": "ci", "scopes": ["api"],
+                             "active": False, "revoked": True}), {}),
+    })
+    assert check_gitlab(GITLAB_TOKEN, request=fake)["live"] == "dead"
+
+
+def test_gitlab_self_404_falls_back_to_user():
+    # Group/project tokens cannot be described by the self endpoint.
+    fake = _fake_github({
+        ("GET", "https://gitlab.com/api/v4/personal_access_tokens/self"): (404, b"", {}),
+        ("GET", "https://gitlab.com/api/v4/user"): (
+            200, json.dumps({"username": "deploy"}), {}),
+    })
+    r = check_gitlab(GITLAB_TOKEN, request=fake)
+    assert r["live"] == "live"
+    assert r["method"] == "user"
+    assert r["permissions"] == []  # scopes not listed for these token types
+
+
+def test_gitlab_fallback_user_401_is_dead():
+    fake = _fake_github({
+        ("GET", "https://gitlab.com/api/v4/personal_access_tokens/self"): (404, b"", {}),
+        ("GET", "https://gitlab.com/api/v4/user"): (401, b"{}", {}),
+    })
+    assert check_gitlab(GITLAB_TOKEN, request=fake)["live"] == "dead"
+
+
+# ---------------------------------------------------------------- Stripe (v0.2)
+def test_stripe_live_full_key():
+    fake = _fake_github({
+        ("GET", "https://api.stripe.com/v1/account"): (
+            200, json.dumps({"id": "acct_FAKE123", "livemode": True}), {}),
+    })
+    r = check_stripe(STRIPE_LIVE_KEY, request=fake)
+    assert r["live"] == "live"
+    assert r["permissions"] == ["full secret key"]
+    assert r["account"] == "acct_FAKE123"
+
+
+def test_stripe_401_is_dead():
+    fake = _fake_github({
+        ("GET", "https://api.stripe.com/v1/account"): (
+            401, json.dumps({"error": {"type": "invalid_request_error",
+                                       "message": "Invalid API Key provided"}}), {}),
+    })
+    assert check_stripe(STRIPE_TEST_KEY, request=fake)["live"] == "dead"
+
+
+def test_stripe_403_means_live_but_restricted():
+    # Stripe only returns 403 after authenticating: the key is live, it
+    # just cannot read the account.
+    fake = _fake_github({
+        ("GET", "https://api.stripe.com/v1/account"): (
+            403, json.dumps({"error": {"type": "invalid_request_error",
+                                       "message": "does not have access"}}), {}),
+    })
+    r = check_stripe(STRIPE_RESTRICTED_KEY, request=fake)
+    assert r["live"] == "live"
+    assert r["permissions"] == ["restricted key"]
+
+
+def test_stripe_restricted_key_prefix_reported_as_restricted():
+    fake = _fake_github({
+        ("GET", "https://api.stripe.com/v1/account"): (
+            200, json.dumps({"id": "acct_FAKE123", "livemode": False}), {}),
+    })
+    r = check_stripe(STRIPE_RESTRICTED_KEY, request=fake)
+    assert r["live"] == "live"
+    assert r["permissions"] == ["restricted key"]
+
+
+def test_stripe_429_is_unknown():
+    fake = _fake_github({
+        ("GET", "https://api.stripe.com/v1/account"): (429, b"", {}),
+    })
+    assert check_stripe(STRIPE_TEST_KEY, request=fake)["live"] == "unknown"
+
+
+def test_check_finding_dispatches_slack_gitlab_stripe(monkeypatch):
+    import keyring_audit.validity as v
+    monkeypatch.setattr(v, "check_slack", lambda t: {
+        "live": "live", "reason": "x", "permissions": ["chat:write"],
+        "method": "auth.test"})
+    monkeypatch.setattr(v, "check_gitlab", lambda t: {
+        "live": "live", "reason": "x", "permissions": ["api"],
+        "method": "self"})
+    monkeypatch.setattr(v, "check_stripe", lambda k: {
+        "live": "dead", "reason": "401", "permissions": [],
+        "method": "account"})
+    base = {"detector": "x", "redacted": "x…", "fingerprint": "x",
+            "source": "a.py", "line": 1, "commit": None, "author": None,
+            "date": None}
+    for provider, token, live in (("slack", SLACK_TOKEN, "live"),
+                                  ("gitlab", GITLAB_TOKEN, "live"),
+                                  ("stripe", STRIPE_TEST_KEY, "dead")):
+        out = check_finding({**base, "provider": provider, "_secret": token},
+                            verify=True)
+        assert out["validity"]["live"] == live
+        assert "_secret" not in out
