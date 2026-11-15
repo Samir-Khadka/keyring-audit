@@ -484,6 +484,15 @@ def check_finding(finding: dict, verify: bool = True) -> dict:
         out["validity"] = check_gitlab(secret)
     elif provider == "stripe":
         out["validity"] = check_stripe(secret)
+    elif provider == "github-actions":
+        # GitHub never returns a secret's value — not to anyone, not
+        # even the repo owner — so liveness cannot be checked. The
+        # finding already carries the right validity; this branch just
+        # makes the reason explicit instead of the generic fallback.
+        out["validity"] = {"live": "unknown",
+                           "reason": "GitHub never returns a secret's "
+                                     "value, so liveness cannot be checked",
+                           "permissions": [], "method": "github-actions-api"}
     else:
         out["validity"] = {"live": "unknown",
                            "reason": "no validity check for this provider in v0.2",

@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.1.0 — 2026-11-15
+
+Phase 6 coverage, second piece: CI/CD variables.
+
+- `ci-secrets --repo <owner/repo>` lists a repo's GitHub Actions
+  secrets and cross-references them with its workflow files. A secret
+  no workflow references is flagged safe to remove; a secret not
+  updated in over two years is flagged stale. The age component is
+  measured from `updated_at` (the last time the secret was set — the
+  closest thing to a rotation date); CI exposure scores 12 (not in
+  code, but available to every workflow run). 180 tests.
+- Honest limit, stated in the report: GitHub never returns a secret's
+  value, so liveness is always "unknown" and the privilege is scored
+  in the middle (20) rather than assumed safe. "Used" means a workflow
+  references `${{ secrets.NAME }}` — whether the workflow actually
+  runs is not something the API says.
+- Dogfood: three of Samir's repos (keyring-audit, portfolio, kavach)
+  all have 0 Actions secrets — the API path works, and the answer is
+  clean. The used/unused/stale cross-reference is proven by mocked
+  tests.
+
 ## v1.0.0 — 2026-11-15
 
 Phase 6 coverage, first piece: container images. The two repos stay

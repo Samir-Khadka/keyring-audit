@@ -132,6 +132,9 @@ def _exposure(finding: dict) -> tuple[int, str]:
     if finding.get("exposure_source") == "image":
         return 15, ("in a container image layer — the secret ships with "
                     "the image, to anyone who pulls it")
+    if finding.get("exposure_source") == "ci":
+        return 12, ("in the GitHub Actions secret store — not in code, "
+                    "but available to every workflow run")
     if finding.get("commit"):
         return 17, "in git history — committed, possibly pushed"
     return 7, "in the working tree only — not committed"
@@ -155,6 +158,11 @@ def _age(finding: dict) -> tuple[int, str]:
 def _usage(finding: dict) -> tuple[int, str]:
     """0–15. Is it still being used? Recently used = riskier (live and
     active); long-unused = safer to kill but still sprawl."""
+    # A precomputed usage (ci.py): a CI secret's "usage" is whether any
+    # workflow references it, which no last-used timestamp can say.
+    override = finding.get("usage_override")
+    if override:
+        return override
     validity = finding.get("validity", {})
     last_used = validity.get("last_used")
     if not last_used:

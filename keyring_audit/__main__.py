@@ -1,4 +1,4 @@
-"""Keyring Audit CLI (v1.0).
+"""Keyring Audit CLI (v1.1).
 
     keyring-audit scan <path> [--verify|--no-verify]
                              [--format text|json|md] [--output FILE]
@@ -8,7 +8,8 @@
     keyring-audit scan-image <image.tar> [--verify|--no-verify]
                              [--format text|json|md] [--output FILE]
                              [--fail-on N]
-    keyring-audit install-hook [--path <repo>] [--force]
+    keyring-audit ci-secrets --repo <owner/repo> [--path <dir>]
+                             [--format text|json|md]
     keyring-audit rotate --fingerprint <fp> [--report FILE | --path DIR]
                          [--format text|md|json]
                          [--execute --approve --old-key-id ID]   (AWS only)
@@ -184,6 +185,13 @@ def build_parser() -> argparse.ArgumentParser:
     image_p.add_argument("--output", type=Path, help="write the report here as well as stdout")
     image_p.add_argument("--fail-on", type=int, default=60,
                          help="exit 1 when a live credential scores at or above this (default 60)")
+    ci_p = sub.add_parser("ci-secrets",
+                          help="list a repo's GitHub Actions secrets and cross-reference them with its workflow files (Phase 6)")
+    ci_p.add_argument("--repo", required=True,
+                      help="owner/repo (e.g. Samir-Khadka/keyring-audit)")
+    ci_p.add_argument("--path", type=Path,
+                      help="local repo to read the workflow files from (default: fetch them via the API)")
+    ci_p.add_argument("--format", choices=["text", "json", "md"], default="text")
     return ap
 
 
@@ -215,6 +223,8 @@ def scan_main(argv=None) -> int:
         return agents_main(args)
     if args.command == "scan-image":
         return scan_image_main(args)
+    if args.command == "ci-secrets":
+        return ci_secrets_main(args)
     if args.command != "scan":
         ap.print_help()
         return EXIT_INFRA
@@ -564,6 +574,52 @@ def scan_image_main(args) -> int:
         if (f.get("validity", {}).get("live") == "live"
                 and f["risk"]["score"] >= args.fail_on):
             return EXIT_FOUND
+    return EXIT_OK
+
+
+def ci_secrets_main(args) -> int:
+    """List a repo's GitHub Actions secrets and cross-reference them
+    with its workflow files. A report, not a gate: always exits 0.
+    The token needs the `repo` scope (or Secrets: read) and comes
+    from GITHUB_TOKEN or a prompt, used once. No secret value is ever
+    read — GitHub never returns one."""
+    from .ci import (build_ci_findings, list_actions_secrets,
+                     load_workflows_api, load_workflows_local, render_ci)
+
+    if "/" not in args.repo:
+        log.error("--repo must be owner/repo")
+        return EXIT_INFRA
+    owner, repo = args.repo.split("/", 1)
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        try:
+            token = _prompt_secret("GitHub token (hidden, used once to "
+                                   "list the Actions secrets): ")
+        except ValueError as e:
+            log.error("%s", e)
+            return EXIT_INFRA
+    try:
+        secrets = list_actions_secrets(owner, repo, token)
+    except ValueError as e:
+        log.error("%s", e)
+        return EXIT_INFRA
+    if args.path is not None:
+        if not args.path.is_dir():
+            log.error("%s is not a directory", args.path)
+            return EXIT_INFRA
+        workflows = load_workflows_local(args.path)
+    else:
+        workflows = load_workflows_api(owner, repo, token)
+    findings = build_ci_findings(owner, repo, secrets, workflows)
+    ranked = rank_all(findings)
+    # An unused secret is safe to remove, whatever its liveness (which
+    # cannot be checked) — the ranking's safe_to_kill needs a live
+    # verdict, so this is set here.
+    for f in ranked:
+        if not f["used_in"]:
+            f["risk"]["safe_to_kill"] = True
+    sys.stdout.write(render_ci(ranked, owner, repo, args.format))
+    sys.stdout.write("\n")
     return EXIT_OK
 
 

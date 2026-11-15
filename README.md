@@ -73,6 +73,14 @@ risk, and tells the owner exactly how to revoke or rotate them.
   report. A finding's source is "layer <n>: <file path>", so the fix
   is obvious: the secret was baked in at that layer. No Docker daemon
   is needed; a plain tar of files is scanned as a single layer.
+- **CI/CD variables.** `keyring-audit ci-secrets --repo <owner/repo>`
+  lists a repo's GitHub Actions secrets and cross-references them
+  with its workflow files, so the report can say which secrets are
+  actually used and which are dead weight. A secret no workflow
+  references is flagged safe to remove; a secret not updated in over
+  two years is flagged stale. GitHub never returns a secret's value,
+  so liveness is always "unknown" — the report says so, and the
+  privilege is scored in the middle rather than assumed safe.
 - **Assign owners.** Every finding names who is responsible: AWS
   Owner/Team tags first, then the commit author, then `git blame` for
   working-tree and staged lines (an uncommitted line names the local
@@ -165,7 +173,7 @@ Example output:
    own is unauthorised access in most jurisdictions — this tool refuses
    to validate a credential it was not given by its owner.
 
-## Honest limits (v1.0)
+## Honest limits (v1.1)
 
 - The staged scan reads added lines only — a secret already in history
   is not the staged diff's business (clean it separately; a full scan
@@ -204,6 +212,12 @@ Example output:
   is exactly what the scan finds, layer by layer). An image finding
   has no owner (there is no git history in an image), so it scores 10
   on ownership — the fix is in the Dockerfile, not in a person.
+- CI/CD variables: GitHub never returns a secret's value, so a CI
+  secret's liveness cannot be checked — it is always "unknown", and
+  the privilege is scored in the middle (20) rather than assumed
+  safe. "Used" means a workflow file references `${{ secrets.NAME }}`;
+  whether the workflow actually runs is not something the API says.
+  The token needs the `repo` scope (or Secrets: read).
 
 - Validity checks are implemented for GitHub, AWS, Slack, GitLab and
   Stripe. Private keys and JWTs are detected but have no live check —
@@ -225,9 +239,8 @@ Example output:
 
 ## Roadmap
 
-- **Phase 6 (remaining):** CI/CD variables (GitHub Actions secrets
-  via the API), SaaS integrations, cloud accounts (GCP, Azure), and
-  Slack/GitLab connectors.
+- **Phase 6 (remaining):** SaaS integrations, cloud accounts (GCP,
+  Azure), and Slack/GitLab connectors.
 - **The combined install question is closed:** the two repos stay
   separate. Keyring Audit and Agent Gateway share the identity graph
   (`agents --format json`), not a repo.
