@@ -40,6 +40,17 @@ risk, and tells the owner exactly how to revoke or rotate them.
   can create or revoke those tokens from the CLI) with the same
   `--verify` afterwards. The old secret is read from the terminal and
   used once, in memory — never stored, never written to a file.
+- **Fix with a PR.** `keyring-audit fix --fingerprint <fp>` opens a
+  pull request that replaces a hardcoded credential with an
+  environment-variable reference (the vault reference): Python reads
+  `os.environ`, JS reads `process.env`, shell reads `"${VAR}"`, YAML
+  reads `${VAR}` (or `${{ secrets.VAR }}` in workflows), and a `.env`
+  line becomes a comment naming where the value lives. A dry run
+  first, always — the diff (secret redacted) and the PR title and body
+  are printed, nothing changes. With `--approve` it creates the
+  branch, commits, and opens the PR. Anything it cannot fix safely
+  (a value inside a longer string, a JSON file) is a manual step in
+  the PR body, not a guess.
 - **Assign owners.** Every finding names who is responsible: AWS
   Owner/Team tags first, then the commit author, then `git blame` for
   working-tree and staged lines (an uncommitted line names the local
@@ -132,7 +143,7 @@ Example output:
    own is unauthorised access in most jurisdictions — this tool refuses
    to validate a credential it was not given by its owner.
 
-## Honest limits (v0.6)
+## Honest limits (v0.7)
 
 - The staged scan reads added lines only — a secret already in history
   is not the staged diff's business (clean it separately; a full scan
@@ -149,10 +160,14 @@ Example output:
   "no owner" and scores 10 on ownership — that is the honest answer,
   not a gap to hide.
 - Rotation is AWS-only for automation, and only for IAM users (an
-  assumed-role credential has no access keys to create). The PR
-  automation — a pull request that replaces a hardcoded key with a
-  vault reference or a short-lived credential — is the remaining
-  Phase 4 piece and is not built yet.
+  assumed-role credential has no access keys to create).
+- The PR fix only covers `.py`, `.js`/`.ts`, `.sh`, `.env` and
+  `.yml`/`.yaml`, and only simple assignments. A value that lives only
+  in history cannot be fixed by a PR — rewrite the history with
+  git filter-repo or BFG. The fix needs a GitHub remote and a token
+  (`GITHUB_TOKEN`, or one pasted at the prompt); the PR's file diff
+  will show the removed line, but that line is already in the repo,
+  so the PR exposes it to no one new.
 
 - Validity checks are implemented for GitHub, AWS, Slack, GitLab and
   Stripe. Private keys and JWTs are detected but have no live check —
@@ -174,9 +189,6 @@ Example output:
 
 ## Roadmap
 
-- **Phase 4 (remaining):** PR automation — a pull request that
-  replaces a hardcoded key with a vault reference or a short-lived
-  credential.
 - **Phase 5:** agent identities — discovery and control for AI agent
   credentials, built on Agent Gateway's per-agent identity model.
 - **Phase 4:** safe remediation — guided rotation with dry runs and

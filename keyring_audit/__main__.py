@@ -1,4 +1,4 @@
-"""Keyring Audit CLI (v0.6).
+"""Keyring Audit CLI (v0.7).
 
     keyring-audit scan <path> [--verify|--no-verify]
                              [--format text|json|md] [--output FILE]
@@ -40,6 +40,13 @@ import sys
 from pathlib import Path
 
 from . import __version__
+from .fix import (
+    build_pr_body,
+    build_pr_title,
+    fix_credential,
+    open_fix_pr,
+    redacted_diff,
+)
 from .ownership import apply_tag_owner
 from .ranking import rank_all
 from .remediation import (
@@ -130,6 +137,15 @@ def build_parser() -> argparse.ArgumentParser:
                        help="re-check whether the old credential is dead")
     rot_p.add_argument("--rotated-at",
                        help="ISO time the rotation completed, for the post-rotation usage check (with --verify)")
+    fix_p = sub.add_parser("fix",
+                           help="open a PR replacing a hardcoded credential with an env-var reference (dry run first)")
+    fix_p.add_argument("--fingerprint", required=True,
+                       help="salted fingerprint of the finding (full, or a unique prefix of 8+ chars)")
+    fix_p.add_argument("--path", type=Path, default=Path("."),
+                       help="repo to scan and fix (default: current directory)")
+    fix_p.add_argument("--approve", action="store_true",
+                       help="explicit approval to create the branch, commit and PR (required)")
+    fix_p.add_argument("--format", choices=["text", "md"], default="text")
     return ap
 
 
@@ -155,6 +171,8 @@ def scan_main(argv=None) -> int:
         return install_hook_main(args)
     if args.command == "rotate":
         return rotate_main(args)
+    if args.command == "fix":
+        return fix_main(args)
     if args.command != "scan":
         ap.print_help()
         return EXIT_INFRA
@@ -362,6 +380,82 @@ def rotate_main(args) -> int:
     sys.stdout.write("Old key deleted and confirmed gone from the user's "
                      "key list. Re-run the scan to confirm it no longer "
                      "appears.\n")
+    return EXIT_OK
+
+
+def fix_main(args) -> int:
+    """Open a PR replacing a hardcoded credential with an env-var
+    reference. A dry run first: without --approve it prints the diff
+    (secret redacted) and the PR title and body, and changes nothing."""
+    if not args.path.is_dir():
+        log.error("%s is not a directory", args.path)
+        return EXIT_INFRA
+    try:
+        result = scan(args.path)
+        finding = _find_by_fingerprint(result["findings"], args.fingerprint)
+    except ValueError as e:
+        log.error("%s", e)
+        return EXIT_INFRA
+    # The values to replace: for AWS, the key id AND the secret; for
+    # every other provider, the single token.
+    values = [finding.get("_secret")]
+    if finding.get("provider") == "aws" and finding.get("key_id"):
+        values = [finding["key_id"], finding.get("_secret")]
+    values = [v for v in values if v]
+    if not values:
+        log.error("the finding has no credential value to replace — the "
+                  "AWS key id was found without its secret, so there is "
+                  "nothing to rotate or fix in the code")
+        return EXIT_INFRA
+    try:
+        fix = fix_credential(args.path, finding, values)
+    except ValueError as e:
+        log.error("%s", e)
+        return EXIT_INFRA
+    if not fix["files"]:
+        log.error("nothing could be fixed automatically")
+        for note in fix["manual"]:
+            log.error("  %s", note)
+        return EXIT_INFRA
+    title = build_pr_title(finding)
+    body = build_pr_body(finding, fix)
+    if not args.approve:
+        sys.stdout.write("DRY RUN — nothing changed, no branch or PR "
+                         "created. Re-run with --approve to open the PR.\n\n")
+        from .detectors import redact as _redact
+
+        replacements = [(v, _redact(v)) for v in values]
+        for rel, new_content in fix["files"].items():
+            old_content = (args.path / rel).read_text()
+            sys.stdout.write(redacted_diff(rel, old_content, new_content,
+                                           replacements))
+        sys.stdout.write(f"\nPR title: {title}\n\n{body}\n")
+        sys.stdout.write("Would create branch "
+                         f"keyring-audit/fix-{finding['fingerprint'][:8]} "
+                         "and open a PR against the repo's default branch.\n")
+        if fix["manual"]:
+            sys.stdout.write("Still needs a manual edit:\n")
+            for note in fix["manual"]:
+                sys.stdout.write(f"  - {note}\n")
+        return EXIT_OK
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        try:
+            token = _prompt_secret("GitHub token (hidden, used once to "
+                                   "open the PR): ")
+        except ValueError as e:
+            log.error("%s", e)
+            return EXIT_INFRA
+    try:
+        pr = open_fix_pr(args.path, finding, fix, token)
+    except ValueError as e:
+        log.error("%s", e)
+        return EXIT_INFRA
+    sys.stdout.write(f"PR opened: {pr.get('html_url')}\n")
+    if fix["manual"]:
+        sys.stdout.write("Still needs a manual edit:\n")
+        for note in fix["manual"]:
+            sys.stdout.write(f"  - {note}\n")
     return EXIT_OK
 
 

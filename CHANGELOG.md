@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.7.0 — 2026-11-15
+
+Phase 4 complete: PR automation. The rotation flow (v0.6) plus this
+release close out Phase 4.
+
+- `fix --fingerprint <fp>` opens a pull request that replaces a
+  hardcoded credential with an environment-variable reference — the
+  vault reference. Python reads `os.environ` (adding `import os`
+  when the file lacks it), JS/TS reads `process.env`, shell reads
+  `"${VAR}"`, YAML reads `${VAR}` (`${{ secrets.VAR }}` inside
+  `.github/workflows/`), and a `.env` line becomes a comment naming
+  where the value lives. For AWS both the key id and the secret are
+  replaced. 145 tests.
+- A dry run first, always: without `--approve` it prints the diff
+  (secret redacted) and the PR title and body, and changes nothing.
+  With `--approve` it creates the branch
+  `keyring-audit/fix-<fp8>`, commits via the GitHub API, and opens the
+  PR. The token comes from `GITHUB_TOKEN` or a prompt, used once.
+- Anything it cannot fix safely — a value inside a longer string, a
+  JSON file, an unknown extension — is a manual step in the PR body,
+  not a guess. A value that lives only in history is refused outright
+  (a PR cannot fix history). The fixed files are verified to hold no
+  occurrence of the old value before anything is committed.
+
 ## v0.6.0 — 2026-11-15
 
 Phase 4: safe remediation — the rotation flow. The PR automation
