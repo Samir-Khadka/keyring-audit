@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.4.0 — 2026-11-15
+
+Phase 6 coverage, fifth and final piece: Slack/GitLab connectors.
+Phase 6 is now COMPLETE.
+
+- `keyring-audit connectors --gitlab` lists the group and project
+  access tokens and deploy tokens visible to a GitLab personal
+  access token, with scopes, expiry and revoked status, ranked with
+  the shared scoring (an `api`-scoped token is admin-level, 40; a
+  deploy token is read-only, 15; exposure 12, "in GitLab, not in
+  code"). A token with no expiry is flagged as a sprawl risk. 221
+  tests.
+- `keyring-audit connectors --slack` identifies a Slack token
+  (`auth.test` — workspace, bot or user) and lists the workspace's
+  installed apps (`apps.list`). Slack never returns an app's token,
+  so the report names the apps and says the token itself cannot be
+  listed. A token without the `apps:read` scope falls back to the
+  identity only, and the report says why.
+- Honest limits: GitLab never returns a token's value after
+  creation, so the report lists identities, not secrets. A full live
+  enumeration was not dogfooded — no real GitLab or Slack token was
+  available; the enumeration logic is proven by mocked tests, and
+  the live path was verified by the real providers rejecting a bad
+  token (GitLab 401, Slack `invalid_auth`). The first live attempt
+  timed out on a transient sandbox-proxy stall; the retry was fast.
+
 ## v1.3.0 — 2026-11-15
 
 Phase 6 coverage, fourth piece: SaaS integrations.

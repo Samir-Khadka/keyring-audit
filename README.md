@@ -95,6 +95,16 @@ risk, and tells the owner exactly how to revoke or rotate them.
   usage up into thousands of dollars within hours, so a verified-live
   OpenAI or Anthropic key scores 35 on privilege and lands High or
   Critical — rotate it within minutes, not hours.
+- **Slack and GitLab connectors.** `keyring-audit connectors
+  --gitlab` lists the group and project access tokens and deploy
+  tokens visible to a GitLab personal access token, with scopes,
+  expiry and revoked status, ranked with the shared scoring (a token
+  with the `api` scope is admin-level; a deploy token is read-only;
+  a token with no expiry is flagged as a sprawl risk).
+  `keyring-audit connectors --slack` identifies a Slack token and
+  lists the workspace's installed apps. Slack never returns an app's
+  token, so the report names the apps and says the token itself
+  cannot be listed.
 - **Assign owners.** Every finding names who is responsible: AWS
   Owner/Team tags first, then the commit author, then `git blame` for
   working-tree and staged lines (an uncommitted line names the local
@@ -187,7 +197,7 @@ Example output:
    own is unauthorised access in most jurisdictions — this tool refuses
    to validate a credential it was not given by its owner.
 
-## Honest limits (v1.3)
+## Honest limits (v1.4)
 
 - The staged scan reads added lines only — a secret already in history
   is not the staged diff's business (clean it separately; a full scan
@@ -246,6 +256,17 @@ Example output:
   can spend, not because its exact scope is known. A Notion token's
   type (bot vs user) is read from `users/me`; the pages it can reach
   are not listed. A Hugging Face token's role is read from `whoami`.
+- Slack/GitLab connectors: GitLab never returns a token's value after
+  creation, so the report lists the tokens, not their secrets. A
+  GitLab token needs Maintainer (40) or higher on a group or project
+  to list its tokens — a token that cannot see a group simply does
+  not report it. Slack's `apps.list` needs the `apps:read` scope (a
+  bot token usually does not have it); the report says so and falls
+  back to the `auth.test` identity. A full live enumeration was not
+  dogfooded (no real GitLab or Slack token was available); the
+  enumeration logic is proven by mocked tests, and the live path was
+  verified by the real providers rejecting a bad token (GitLab 401,
+  Slack `invalid_auth`).
 
 - Validity checks are implemented for GitHub, AWS, Slack, GitLab and
   Stripe. Private keys and JWTs are detected but have no live check —
@@ -267,7 +288,12 @@ Example output:
 
 ## Roadmap
 
-- **Phase 6 (remaining):** Slack/GitLab connectors.
+- **Phase 6 is COMPLETE.** CI/CD variables, SaaS integrations, cloud
+  accounts, container images, and Slack/GitLab connectors are all
+  shipped (v1.0–v1.4). The remaining work is the honest limits in
+  each — a GCP API key's validity is always unknown, an Azure
+  bad-tenant is unknown not dead, and the IAM policy read (which GCP
+  roles / Azure role assignments an identity holds) is not yet in.
 - **The combined install question is closed:** the two repos stay
   separate. Keyring Audit and Agent Gateway share the identity graph
   (`agents --format json`), not a repo.

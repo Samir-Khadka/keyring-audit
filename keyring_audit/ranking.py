@@ -180,6 +180,10 @@ def _exposure(finding: dict) -> tuple[int, str]:
     if finding.get("exposure_source") == "ci":
         return 12, ("in the GitHub Actions secret store — not in code, "
                     "but available to every workflow run")
+    if finding.get("exposure_source") == "gitlab-platform":
+        return 12, ("in GitLab itself — not in code, but a token that "
+                    "exists in the platform and can be used by anyone "
+                    "who holds it")
     if finding.get("commit"):
         return 17, "in git history — committed, possibly pushed"
     return 7, "in the working tree only — not committed"

@@ -1,4 +1,4 @@
-"""Keyring Audit CLI (v1.3).
+"""Keyring Audit CLI (v1.4).
 
     keyring-audit scan <path> [--verify|--no-verify]
                              [--format text|json|md] [--output FILE]
@@ -192,6 +192,15 @@ def build_parser() -> argparse.ArgumentParser:
     ci_p.add_argument("--path", type=Path,
                       help="local repo to read the workflow files from (default: fetch them via the API)")
     ci_p.add_argument("--format", choices=["text", "json", "md"], default="text")
+    conn_p = sub.add_parser("connectors",
+                            help="enumerate the non-human identities inside a Slack workspace or a GitLab instance (Phase 6)")
+    conn_p.add_argument("--gitlab", action="store_true",
+                        help="list the group/project access tokens and deploy tokens visible to a GitLab personal access token (GITLAB_TOKEN or a prompt)")
+    conn_p.add_argument("--slack", action="store_true",
+                        help="identify a Slack token and list the workspace's installed apps (SLACK_TOKEN or a prompt)")
+    conn_p.add_argument("--host", default="https://gitlab.com",
+                        help="GitLab host (default https://gitlab.com)")
+    conn_p.add_argument("--format", choices=["text", "json", "md"], default="text")
     return ap
 
 
@@ -225,6 +234,8 @@ def scan_main(argv=None) -> int:
         return scan_image_main(args)
     if args.command == "ci-secrets":
         return ci_secrets_main(args)
+    if args.command == "connectors":
+        return connectors_main(args)
     if args.command != "scan":
         ap.print_help()
         return EXIT_INFRA
@@ -619,6 +630,57 @@ def ci_secrets_main(args) -> int:
         if not f["used_in"]:
             f["risk"]["safe_to_kill"] = True
     sys.stdout.write(render_ci(ranked, owner, repo, args.format))
+    sys.stdout.write("\n")
+    return EXIT_OK
+
+
+def connectors_main(args) -> int:
+    """Enumerate the non-human identities inside a Slack workspace or
+    a GitLab instance. A discovery report, not a gate: always exits 0.
+    The token comes from GITLAB_TOKEN / SLACK_TOKEN or a prompt, used
+    once. No secret value is ever listed — GitLab never returns a
+    token's value after creation, and Slack never returns an app's
+    token."""
+    from .connectors import (gitlab_connectors, render_connectors,
+                             slack_connectors)
+    from .ranking import rank_all
+
+    if args.gitlab == args.slack:
+        log.error("pass exactly one of --gitlab or --slack")
+        return EXIT_INFRA
+    if args.gitlab:
+        token = os.environ.get("GITLAB_TOKEN")
+        if not token:
+            try:
+                token = _prompt_secret("GitLab personal access token "
+                                       "(hidden, used once to list the "
+                                       "tokens it can see): ")
+            except ValueError as e:
+                log.error("%s", e)
+                return EXIT_INFRA
+        try:
+            result = gitlab_connectors(token, args.host)
+        except ValueError as e:
+            log.error("%s", e)
+            return EXIT_INFRA
+        result["findings"] = rank_all(result["findings"])
+        sys.stdout.write(render_connectors(result, "gitlab", args.format))
+        sys.stdout.write("\n")
+        return EXIT_OK
+    token = os.environ.get("SLACK_TOKEN")
+    if not token:
+        try:
+            token = _prompt_secret("Slack token (hidden, used once to "
+                                   "identify it and list the apps): ")
+        except ValueError as e:
+            log.error("%s", e)
+            return EXIT_INFRA
+    try:
+        result = slack_connectors(token)
+    except ValueError as e:
+        log.error("%s", e)
+        return EXIT_INFRA
+    sys.stdout.write(render_connectors(result, "slack", args.format))
     sys.stdout.write("\n")
     return EXIT_OK
 
