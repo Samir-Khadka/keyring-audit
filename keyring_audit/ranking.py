@@ -52,6 +52,10 @@ def _privilege(finding: dict) -> tuple[int, str]:
         # This branch comes first: an agent key's liveness is always
         # "unknown" (no provider endpoint checks a gateway key), and
         # the unknown branch would hide the policy-derived score.
+        # A key the live check proved dead scores 0 — it cannot be
+        # used, whatever its policy allows.
+        if live == "dead":
+            return 0, "dead credential — the gateway does not know this key"
         priv = finding.get("agent_privilege")
         if priv:
             return priv

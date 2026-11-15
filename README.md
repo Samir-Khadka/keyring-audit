@@ -60,7 +60,13 @@ risk, and tells the owner exactly how to revoke or rotate them.
   it. The audit log's hash chain is verified and the result reported.
   An agent with no audit entries is a "safe to kill" candidate; an
   agent with many denied attempts is flagged. `--format json` is the
-  shared identity graph both products can read.
+  shared identity graph both products can read. With
+  `--live-check <url>` each key is also checked against a running
+  gateway (POST `/mcp` with a method the gateway does not support —
+  the key is checked before dispatch, so a 401 means dead and any
+  other answer means live, with no tool called and no audit entry
+  written; a gateway that cannot be reached leaves the key
+  "unknown", never "dead").
 - **Assign owners.** Every finding names who is responsible: AWS
   Owner/Team tags first, then the commit author, then `git blame` for
   working-tree and staged lines (an uncommitted line names the local
@@ -182,9 +188,9 @@ Example output:
   extractor (agent, risk_tier, the `tool:` lines under `allow:`), not
   a YAML parser — Keyring Audit stays stdlib-only. If the policy
   format grows, the extractor is the place to add a real parser. A
-  gateway key's liveness cannot be checked (no provider endpoint
-  checks a gateway key), so it is reported "unknown" and the usage
-  score comes from the audit log, which is the real evidence.
+  gateway key's liveness comes from the audit log unless
+  `--live-check` is given, in which case the running gateway is asked
+  directly; the probe calls no tool and writes no audit entry.
 
 - Validity checks are implemented for GitHub, AWS, Slack, GitLab and
   Stripe. Private keys and JWTs are detected but have no live check —
@@ -206,10 +212,10 @@ Example output:
 
 ## Roadmap
 
-- **Phase 5 (remaining):** deeper Agent Gateway integration — the
-  shared identity graph as a single combined install (Keyring Audit
-  as the discovery half of Agent Gateway), and a live key check
-  against a running gateway.
+- **Phase 5 (remaining):** deeper Agent Gateway integration — a single
+  combined install (Keyring Audit as the discovery half of Agent
+  Gateway). The plan flags this as a bigger decision for later; it is
+  Samir's call, not a build step.
 - **Phase 6:** coverage — CI/CD variables, SaaS accounts, cloud
   accounts, container images.
 - **Phase 4:** safe remediation — guided rotation with dry runs and

@@ -33,6 +33,14 @@ and the risk_tier; usage from the audit log's last-used time; exposure
 is the gateway key config (server-side, not committed); ownership is
 the agent itself. An agent key with no audit entries at all is a
 "safe to kill" candidate — dead weight, not a mystery.
+
+With `--live-check <url>` (v0.9) the key is also checked against a
+running gateway: a POST to `<url>/mcp` with the key in `x-agent-key`
+and a method the gateway does not support. The gateway checks the key
+before dispatching, so a 401 means the key is unknown (dead) and any
+other answer means the key was accepted (live) — without calling any
+tool, touching the upstream, or writing an audit entry. A gateway
+that cannot be reached leaves the validity "unknown", never "dead".
 """
 from __future__ import annotations
 
@@ -40,6 +48,8 @@ import hashlib
 import json
 import os
 import re
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -196,19 +206,58 @@ def agent_privilege(policy: dict | None) -> tuple[int, str]:
     return tool_score, tool_why
 
 
+def check_key_live(url: str, key: str, timeout: float = 10) -> dict:
+    """Is this agent key live on a running gateway? POST <url>/mcp
+    with the key in `x-agent-key` and a method the gateway does not
+    support. The gateway checks the key before dispatching, so a 401
+    means the key is unknown (dead) and any other answer means the
+    key was accepted (live) — without calling any tool, touching the
+    upstream, or writing an audit entry. A gateway that cannot be
+    reached leaves the validity "unknown", never "dead"."""
+    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping",
+                       "params": {}}).encode()
+    req = urllib.request.Request(
+        url.rstrip("/") + "/mcp", data=body, method="POST",
+        headers={"Content-Type": "application/json",
+                 "x-agent-key": key})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            status = resp.status
+    except urllib.error.HTTPError as e:
+        status = e.code
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        return {"live": "unknown",
+                "reason": f"gateway unreachable: {e}",
+                "method": "gateway-live-check"}
+    if status == 401:
+        return {"live": "dead",
+                "reason": "the gateway does not know this key (401)",
+                "method": "gateway-live-check"}
+    if status == 403:
+        return {"live": "live",
+                "reason": "key accepted, but no policy for this agent (403)",
+                "method": "gateway-live-check"}
+    return {"live": "live",
+            "reason": f"key accepted by the gateway (HTTP {status})",
+            "method": "gateway-live-check"}
+
+
 def build_agent_identities(keys: dict[str, str],
                            policies: dict[str, dict],
-                           audit: dict) -> list[dict]:
+                           audit: dict,
+                           live_check_url: str | None = None) -> list[dict]:
     """The identity graph: one record per agent key, plus one per agent
     that has a policy or audit trail but no key on file. Ranked with
-    the same 0–100 score as any other credential."""
+    the same 0–100 score as any other credential. With a live-check
+    URL, each key is also checked against the running gateway."""
     usage = audit.get("usage", {})
     identities: list[dict] = []
     seen_agents: set[str] = set()
     for key, agent in sorted(keys.items(), key=lambda kv: kv[1]):
         seen_agents.add(agent)
+        live = check_key_live(live_check_url, key) if live_check_url else None
         identities.append(_identity(agent, key, policies.get(agent),
-                                    usage.get(agent)))
+                                    usage.get(agent), live))
     # Agents with a policy or an audit trail but no key on file: the
     # key is held by the gateway and was not provided.
     for agent in sorted(set(policies) | set(usage)):
@@ -221,8 +270,18 @@ def build_agent_identities(keys: dict[str, str],
 
 
 def _identity(agent: str, key: str | None, policy: dict | None,
-              use: dict | None) -> dict:
+              use: dict | None, live: dict | None = None) -> dict:
     last_used = (use or {}).get("last_used")
+    validity = {"live": "unknown",
+                "reason": "no provider endpoint checks a gateway "
+                          "key — liveness comes from the audit log",
+                "permissions": (policy or {}).get("allowed_tools", []),
+                "method": "audit-log",
+                "last_used": last_used}
+    if live is not None:
+        validity = dict(live)
+        validity["permissions"] = (policy or {}).get("allowed_tools", [])
+        validity["last_used"] = last_used
     # A finding-shaped dict, so the shared ranking scores it. The
     # privilege is precomputed from the gateway policy and passed in —
     # the ranking reads it, it does not import this module.
@@ -235,17 +294,14 @@ def _identity(agent: str, key: str | None, policy: dict | None,
         "owner": {"name": agent, "source": "agent-gateway"},
         "exposure_source": "gateway",
         "agent_privilege": agent_privilege(policy),
-        "validity": {"live": "unknown",
-                     "reason": "no provider endpoint checks a gateway "
-                               "key — liveness comes from the audit log",
-                     "permissions": (policy or {}).get("allowed_tools", []),
-                     "method": "audit-log",
-                     "last_used": last_used},
+        "validity": validity,
     }
     ranked = rank(finding)
     calls = (use or {}).get("calls", 0)
     denied = (use or {}).get("denied", 0)
     notes: list[str] = []
+    if validity.get("live") == "dead":
+        notes.append("dead — the gateway does not know this key")
     if not use:
         notes.append("never used — no audit entries at all")
     elif denied:
@@ -253,19 +309,21 @@ def _identity(agent: str, key: str | None, policy: dict | None,
                      "the agent keeps trying tools its policy denies")
     if not policy:
         notes.append("no policy file — the agent runs without a policy")
-    # Safe to kill: an agent key with no audit entries, or none in 90+
-    # days, is dead weight. (The ranking's safe_to_kill needs a live
-    # verdict, which a gateway key cannot give, so this is computed
-    # here from the audit log.)
-    safe_to_kill = False
+    # Safe to kill: a dead key (the live check proved it), or an agent
+    # key with no audit entries, or none in 90+ days — dead weight.
+    # (The ranking's safe_to_kill needs a live verdict, which a
+    # gateway key cannot give without the live check, so this is
+    # computed here.)
+    safe_to_kill = validity.get("live") == "dead"
     if not use:
         safe_to_kill = True
     elif last_used:
         try:
             last = datetime.fromisoformat(last_used.replace("Z", "+00:00"))
-            safe_to_kill = ((datetime.now(timezone.utc) - last).days >= 90)
+            safe_to_kill = safe_to_kill or \
+                ((datetime.now(timezone.utc) - last).days >= 90)
         except ValueError:
-            safe_to_kill = False
+            pass
     ranked["risk"]["safe_to_kill"] = safe_to_kill
     return {"agent": agent, "key_provided": key is not None,
             "key_fingerprint": finding["fingerprint"],
@@ -277,7 +335,10 @@ def _identity(agent: str, key: str | None, policy: dict | None,
                       "last_used": last_used,
                       "denied_tools": (use or {}).get("denied_tools", []),
                       "tools_used": (use or {}).get("tools", [])},
-            "risk": ranked["risk"], "notes": notes}
+            "risk": ranked["risk"], "notes": notes,
+            "validity": {"live": validity.get("live"),
+                         "reason": validity.get("reason"),
+                         "method": validity.get("method")}}
 
 
 def render_agents(identities: list[dict], audit: dict, fmt: str = "text",
@@ -327,7 +388,8 @@ def render_agents(identities: list[dict], audit: dict, fmt: str = "text",
     for ident in identities:
         lines.append(f"{ident['agent']} [{ident['risk']['band']} "
                      f"{ident['risk']['score']}] — key "
-                     f"{ident['key_redacted']}")
+                     f"{ident['key_redacted']} "
+                     f"({ident['validity']['live']})")
         policy = ident["policy"]
         lines.append("  policy: "
                      + (", ".join(policy.get("allowed_tools", []))

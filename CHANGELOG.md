@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.9.0 — 2026-11-15
+
+Phase 5, second half: the live key check. The remaining Phase 5
+piece is the single combined install, which the plan flags as a
+bigger decision for later — Samir's call, not a build step.
+
+- `agents --live-check <url>` checks each agent key against a running
+  gateway: a POST to `<url>/mcp` with the key in `x-agent-key` and a
+  method the gateway does not support. The gateway checks the key
+  before dispatching, so a 401 means the key is unknown (dead) and
+  any other answer means the key was accepted (live) — without
+  calling any tool, touching the upstream, or writing an audit entry
+  (verified against the real gateway: the probe wrote nothing to the
+  audit log). A gateway that cannot be reached leaves the key
+  "unknown", never "dead". 163 tests.
+- A dead key now scores 0 on privilege and is flagged "safe to kill",
+  whatever its policy allows — a dead credential cannot be used.
+- Dogfood against the real gateway (both demo keys + a bogus key):
+  support-bot High 70 (live), analyst-bot Medium 38 (live, never
+  used, safe to kill), ghost-bot Low 23 (dead, safe to kill).
+
 ## v0.8.0 — 2026-11-15
 
 Phase 5 (agent identities), first half. The Agent Gateway tie-in:

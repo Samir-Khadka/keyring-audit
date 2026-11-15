@@ -166,6 +166,8 @@ def build_parser() -> argparse.ArgumentParser:
                           help="policy directory (default: <gateway>/policies)")
     agents_p.add_argument("--audit-log", type=Path, action="append", dest="audit_logs",
                           help="audit-log JSONL file (repeatable; default: <gateway>/data/*.jsonl)")
+    agents_p.add_argument("--live-check",
+                          help="running gateway base URL (e.g. http://127.0.0.1:8000) — check each key against it (POST /mcp with a method the gateway does not support; no tool is called, no audit entry is written)")
     agents_p.add_argument("--format", choices=["text", "json", "md"], default="text")
     return ap
 
@@ -508,7 +510,8 @@ def agents_main(args) -> int:
         if data_dir.is_dir():
             audit_logs = sorted(data_dir.glob("*.jsonl"))
     audit = load_audit_log(audit_logs)
-    identities = build_agent_identities(keys, policies, audit)
+    identities = build_agent_identities(keys, policies, audit,
+                                        live_check_url=args.live_check)
     if not identities:
         print("No agent identities found — no policies, no audit trail, "
               "no keys.")
