@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.3.0 — 2026-11-15
+
+Remote scanning and the pre-commit hook — stop secrets before they are
+committed, and scan repos you have not cloned.
+
+- `scan --repo <url> [--branch B]`: clones into a temp dir, scans
+  working tree + full history, deletes the clone. Nothing is ever
+  pushed. A private repo works when git can clone it; the tool never
+  handles credentials, and any credentials pasted into the URL are
+  stripped before the URL is stored or shown. 82 tests.
+- `scan --staged`: scans only what is staged (`git diff --cached`,
+  added lines, real line numbers). Any staged credential exits 1,
+  whatever its validity. Unstaged changes are not scanned.
+- `install-hook [--path <repo>] [--force]`: writes
+  `.git/hooks/pre-commit` running `scan --staged --no-verify` (offline,
+  so commits stay fast). Refuses to overwrite an existing hook without
+  `--force`; if the tool is not importable it warns and lets the commit
+  through instead of breaking the workflow.
+
 ## v0.2.0 — 2026-11-15
 
 Slack, GitLab and Stripe validity checks — every detected provider now

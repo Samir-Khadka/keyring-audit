@@ -55,6 +55,9 @@ signer (`keyring_audit/aws_sign.py`).
 keyring-audit scan <path> [--verify|--no-verify]
                          [--format text|json|md] [--output FILE]
                          [--fail-on N] [--allowlist FILE] [-v]
+keyring-audit scan --repo <url> [--branch B]   # clone, scan, delete
+keyring-audit scan --staged [--no-verify]       # what a commit would add
+keyring-audit install-hook [--path <repo>] [--force]
 ```
 
 - `--verify` (default): check whether each credential is live.
@@ -64,6 +67,22 @@ keyring-audit scan <path> [--verify|--no-verify]
   error (not a directory, unreadable allowlist, …).
 - `--allowlist FILE`: a JSON file of salted fingerprints to ignore,
   `{"fingerprints": ["<sha256>", …]}`. Never put a real secret in it.
+- `--repo <url>`: clones the repo into a temp dir, scans it (working
+  tree + full history), then deletes the clone. Nothing is ever pushed.
+  A private repo works when git can clone it (SSH key / credential
+  helper) — the tool never handles credentials itself, and any
+  credentials pasted into the URL are stripped before the URL is stored
+  or shown.
+- `--staged`: scans only what is staged for commit (`git diff --cached`,
+  added lines only, with real line numbers). Any staged credential
+  exits 1, whatever its validity — the point is to stop a secret being
+  committed at all. Unstaged changes are not scanned.
+- `install-hook`: writes a pre-commit hook (`.git/hooks/pre-commit`)
+  that runs `scan --staged --no-verify` on every commit and blocks the
+  commit when a secret is staged. The hook calls the same Python the
+  tool was installed with; if the tool is not importable it warns and
+  lets the commit through rather than breaking your workflow. It
+  refuses to overwrite an existing hook unless `--force` is given.
 
 Example output:
 
@@ -92,7 +111,13 @@ Example output:
    own is unauthorised access in most jurisdictions — this tool refuses
    to validate a credential it was not given by its owner.
 
-## Honest limits (v0.2)
+## Honest limits (v0.3)
+
+- The staged scan reads added lines only — a secret already in history
+  is not the staged diff's business (clean it separately; a full scan
+  catches it).
+- `--repo` does a full clone, so a very large repo takes a while; there
+  is no shallow option because the history scan needs the history.
 
 - Validity checks are implemented for GitHub, AWS, Slack, GitLab and
   Stripe. Private keys and JWTs are detected but have no live check —
@@ -114,7 +139,6 @@ Example output:
 
 ## Roadmap
 
-- **v0.3:** `keyring-audit scan --repo` for a remote repo, pre-commit hook.
 - **Phase 2:** full blast-radius mapping (AWS policy simulation for
   named high-risk actions).
 - **Phase 3:** ownership (commit history, cloud tags) + the 0–100 score.

@@ -1,4 +1,4 @@
-"""Report rendering (Keyring Audit v0.2).
+"""Report rendering (Keyring Audit v0.3).
 
 Three formats: text (human), json (machine), md (a report to paste
 into an issue or a PR). All three render from the same ranked findings.

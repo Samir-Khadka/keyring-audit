@@ -1,9 +1,12 @@
-"""Repo scanning (Keyring Audit v0.1).
+"""Repo scanning (Keyring Audit v0.3).
 
-Two sources, both local:
+Four sources:
 - the working tree (every file except .git/, including gitignored files
   like .env — that is where secrets live);
-- the full git history (every commit's added lines, via `git log -p`).
+- the full git history (every commit's added lines, via `git log -p`);
+- the staged diff (`git diff --cached` — what a commit would actually
+  add, for the pre-commit hook);
+- a remote repo (`git clone` into a temp dir, scanned, then deleted).
 
 A finding records where the secret was seen (file, line, commit, author,
 date) and the redacted value + salted fingerprint — never the secret
@@ -14,13 +17,18 @@ reported with validity "unknown (secret not found)".
 Limits, stated plainly: the history scan reads added lines only (a
 secret introduced in a commit is caught where it was introduced);
 binary files and files over 10 MB are skipped with a warning; a shallow
-clone only covers the fetched history and the report says so.
+clone only covers the fetched history and the report says so. The staged
+scan reads added lines only — a secret already in history is not the
+staged diff's business (clean it separately); it is caught by a full
+scan instead.
 """
 from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 from .detectors import (
@@ -218,3 +226,82 @@ def scan(root: Path) -> dict:
             seen[key] = f
     return {"path": str(root), "findings": list(seen.values()),
             "warnings": tree_warnings + hist_warnings}
+
+
+def scan_staged(root: Path) -> dict:
+    """Scan only what is staged (`git diff --cached`). Returns the raw
+    scan. Added lines only, with real new-file line numbers from the
+    hunk headers. Unstaged working-tree changes are not scanned — the
+    hook cares about what the commit would actually add."""
+    findings, warnings = _scan_diff_cached(root)
+    return {"path": str(root), "findings": findings, "warnings": warnings}
+
+
+def _scan_diff_cached(root: Path) -> tuple[list[dict], list[str]]:
+    findings: list[dict] = []
+    warnings: list[str] = []
+    check = _git(["rev-parse", "--is-inside-work-tree"], root)
+    if check.returncode != 0:
+        return [], [f"{root} is not a git repository — staged scan skipped"]
+    diff = _git(["diff", "--cached", "-U0", "--no-color", "--no-ext-diff"],
+                root)
+    if diff.returncode != 0:
+        return [], [f"git diff --cached failed: {diff.stderr.strip()[:200]}"]
+    current_file: str | None = None
+    new_line = 0
+    lines: list[tuple[int, str]] = []
+
+    def flush():
+        nonlocal lines
+        if current_file and lines:
+            findings.extend(_scan_text_lines(lines, current_file))
+        lines = []
+
+    for raw in diff.stdout.splitlines():
+        if raw.startswith("diff --git "):
+            flush()
+            m = re.search(r" b/(.+)$", raw)
+            current_file = m.group(1) if m else None
+        elif raw.startswith("+++ ") or raw.startswith("--- "):
+            continue
+        elif raw.startswith("@@ "):
+            # @@ -old,start +new,start @@ — track the new-file line number.
+            m = re.search(r"\+(\d+)(?:,\d+)? @@", raw)
+            new_line = int(m.group(1)) if m else 0
+        elif raw.startswith("+") and current_file:
+            lines.append((new_line, raw[1:]))
+            new_line += 1
+        elif raw.startswith("Binary files "):
+            current_file = None
+    flush()
+    return findings, warnings
+
+
+def _sanitize_url(url: str) -> str:
+    """Strip credentials from a clone URL before it is stored or shown.
+    Never print a URL a user pasted with a token in it."""
+    return re.sub(r"://[^@/]*@", "://", url)
+
+
+def scan_remote(url: str, branch: str | None = None) -> dict:
+    """Clone a remote repo into a temp dir, scan it, delete the clone.
+    The clone is read-only — nothing is ever pushed. A private repo
+    works when git can clone it (SSH key / credential helper); the tool
+    never handles credentials itself. The URL is stored sanitized, so a
+    token pasted into it never reaches a report or a log."""
+    tmp = Path(tempfile.mkdtemp(prefix="keyring-audit-"))
+    try:
+        cmd = ["git", "clone", "--quiet"]
+        if branch:
+            cmd += ["--branch", branch]
+        cmd += [url, str(tmp)]
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=600)
+        if proc.returncode != 0:
+            raise ValueError(
+                f"git clone failed: {proc.stderr.strip()[:300]}")
+        result = scan(tmp)
+        result["path"] = _sanitize_url(url)
+        return result
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
