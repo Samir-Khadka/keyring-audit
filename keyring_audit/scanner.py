@@ -51,7 +51,15 @@ PAIR_WINDOW = 10  # lines around a key ID to look for its secret
 _GCP_CLIENT_EMAIL_RE = re.compile(
     r'"client_email"\s*:\s*"([^"]+)"|client_email\s*[:=]\s*[\'"]([^\'"]+)[\'"]')
 _GCP_PRIVATE_KEY_RE = re.compile(
-    r'"private_key"\s*:\s*"((?:\\n|[^"])*?-----END PRIVATE KEY-----\\n?)"')
+    # A plain [^"]*? — NOT (?:\\n|[^"])*?. The alternation made the
+    # two branches overlap (a backslash is both \\n's first char and
+    # a [^"] char), so a lazy group over a long PEM backtracked
+    # catastrophically: a 2048-bit key hung the scanner for minutes.
+    # [^"] already matches the \n escapes in a JSON value, so the
+    # \\n branch was redundant as well as ambiguous. The trailing
+    # \n is (?:\\n)? — a bare \\n? would mean "a backslash, then an
+    # optional n", which is not optional at all.
+    r'"private_key"\s*:\s*"([^"]*?-----END PRIVATE KEY-----(?:\\n)?)"')
 _GCP_PROJECT_ID_RE = re.compile(
     r'"project_id"\s*:\s*"([^"]+)"|project_id\s*[:=]\s*[\'"]([^\'"]+)[\'"]')
 _AZURE_CLIENT_SECRET_RE = re.compile(

@@ -1,5 +1,6 @@
 """Tests for the scanner: working tree, git history, AWS pairing, dedup."""
-from keyring_audit.scanner import scan, scan_history, scan_working_tree
+from keyring_audit.scanner import (_scan_text_lines, scan, scan_history,
+                                   scan_working_tree)
 
 GITHUB_PAT = "ghp_" + "1234567890abcdefghij1234567890abcdef"
 AWS_KEY_ID = "AKIAIOSFOD" + "NN7EXAMPLE"
@@ -60,3 +61,35 @@ def test_unpaired_aws_key_id_has_no_secret(tmp_path):
     findings, _ = scan_working_tree(tmp_path)
     assert len(findings) == 1
     assert findings[0]["_secret"] is None
+
+
+def test_long_pem_does_not_hang_scanner():
+    """Regression: a 2048-bit service-account key hung the scanner
+    for minutes (catastrophic backtracking in the private-key regex —
+    the (?:\\\\n|[^"])*? alternation overlapped). A long PEM line must
+    scan in well under a second and still pair with its client_email.
+    """
+    import time
+
+    body = ("MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC5"
+            "VJTkR5mK5kY" * 40)
+    # Split into 64-char lines joined by double-escaped \\n, as a
+    # JSON value written by a tool that double-escapes.
+    chunks = [body[i:i + 64] for i in range(0, len(body), 64)]
+    pem = "-----BEGIN PRIVATE KEY-----" + "\\\\n".join(chunks) \
+        + "\\\\n-----END PRIVATE KEY-----"
+    lines = [
+        (1, '{'),
+        (2, '  "type": "service_account",'),
+        (3, '  "project_id": "demo-project",'),
+        (4, f'  "private_key": "{pem}",'),
+        (5, '  "client_email": "demo@demo-project.iam.gserviceaccount.com",'),
+        (6, '}'),
+    ]
+    t0 = time.time()
+    findings = _scan_text_lines(lines, "gcp.json")
+    assert time.time() - t0 < 1.0, "scanner hung on a long PEM line"
+    assert [f for f in findings
+            if f["detector"] == "gcp-service-account"]
+    # The generic private-key duplicate is suppressed for the pair.
+    assert not [f for f in findings if f["detector"] == "private-key"]

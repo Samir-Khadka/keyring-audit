@@ -195,6 +195,36 @@ def _post_form(url: str, fields: dict) -> dict:
         raise ValueError(f"network error: {e}") from e
 
 
+def _post_json(url: str, token: str, body: dict) -> dict:
+    """POST a JSON body with a Bearer token and return the parsed
+    body. Raises ValueError on a non-2xx response."""
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(url, data=data, method="POST",
+                                 headers={"Authorization": f"Bearer {token}",
+                                          "Content-Type": "application/json"})
+    try:
+        with _opener().open(req, timeout=20) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        raise ValueError(f"HTTP {e.code}") from e
+    except (urllib.error.URLError, OSError, TimeoutError) as e:
+        raise ValueError(f"network error: {e}") from e
+
+
+def _get_json(url: str, token: str) -> dict:
+    """GET a JSON body with a Bearer token. Raises ValueError on a
+    non-2xx response."""
+    req = urllib.request.Request(url, method="GET",
+                                 headers={"Authorization": f"Bearer {token}"})
+    try:
+        with _opener().open(req, timeout=20) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        raise ValueError(f"HTTP {e.code}") from e
+    except (urllib.error.URLError, OSError, TimeoutError) as e:
+        raise ValueError(f"network error: {e}") from e
+
+
 def gcp_access_token(private_key_pem: str, client_email: str,
                      scope: str = GCP_SCOPE_CLOUD_PLATFORM) -> dict:
     """Exchange a GCP service-account key for an access token. Returns
@@ -220,6 +250,103 @@ def azure_access_token(tenant_id: str, client_id: str,
         "scope": AZURE_SCOPE_MANAGEMENT})
 
 
+# The high-value IAM permissions tested for a GCP service account
+# (v1.5). No wildcards are allowed by testIamPermissions, so each is
+# named explicitly. The list is the blast radius that matters — the
+# permissions that let an identity delete things, impersonate other
+# service accounts, or grant itself more access. It is a floor, not a
+# ceiling: a key that holds none of these may still hold others.
+GCP_RISKY_PERMISSIONS = [
+    "resourcemanager.projects.delete",
+    "resourcemanager.projects.setIamPolicy",
+    "iam.serviceAccounts.actAs",
+    "iam.serviceAccountKeys.create",
+    "iam.serviceAccounts.create",
+    "iam.roles.update",
+    "compute.instances.delete",
+    "storage.buckets.delete",
+    "storage.objects.delete",
+    "cloudsql.instances.delete",
+    "secretmanager.versions.access",
+    "bigquery.datasets.delete",
+]
+# The subset that is effectively admin — the holder can grant itself
+# anything, or impersonate another identity.
+GCP_ADMIN_PERMISSIONS = {
+    "resourcemanager.projects.setIamPolicy",
+    "resourcemanager.projects.delete",
+    "iam.serviceAccounts.actAs",
+    "iam.serviceAccountKeys.create",
+    "iam.roles.update",
+}
+
+# Azure RBAC roles that are effectively admin at subscription scope.
+AZURE_ADMIN_RBAC_ROLES = {"Owner", "User Access Administrator"}
+
+
+def gcp_test_iam_permissions(token: str, project_id: str) -> list:
+    """Test which of GCP_RISKY_PERMISSIONS the caller holds on a
+    project (Resource Manager testIamPermissions — no IAM role is
+    required to test your own permissions). Returns the held subset.
+    Raises ValueError on a failed call."""
+    url = ("https://cloudresourcemanager.googleapis.com/v1/projects/"
+           f"{project_id}:testIamPermissions")
+    doc = _post_json(url, token, {"permissions": GCP_RISKY_PERMISSIONS})
+    return doc.get("permissions", []) or []
+
+
+def azure_list_subscriptions(token: str) -> list:
+    """List the subscriptions visible to an Azure token. Returns
+    [{subscriptionId, displayName}]. A valid ARM token always gets a
+    200, even with an empty list."""
+    doc = _get_json("https://management.azure.com/subscriptions"
+                    "?api-version=2020-01-01", token)
+    return [{"subscriptionId": s.get("subscriptionId"),
+             "displayName": s.get("displayName")}
+            for s in doc.get("value", []) or []]
+
+
+def azure_rbac_roles(token: str, object_id: str) -> list:
+    """List the Azure RBAC role assignments for a service principal
+    across every subscription the token can see. Returns
+    [{subscription, role, scope}]. A principal with no Reader access
+    on a subscription gets a 403 there — that subscription is
+    reported as unreadable, not as empty. Raises ValueError when the
+    subscriptions themselves cannot be listed."""
+    subs = azure_list_subscriptions(token)
+    out: list[dict] = []
+    role_names: dict[str, str] = {}
+    for sub in subs:
+        sid = sub["subscriptionId"]
+        url = (f"https://management.azure.com/subscriptions/{sid}/"
+               "providers/Microsoft.Authorization/roleAssignments"
+               "?api-version=2022-04-01"
+               f"&$filter=principalId eq '{object_id}'")
+        try:
+            doc = _get_json(url, token)
+        except ValueError as e:
+            out.append({"subscription": sub["displayName"], "role": None,
+                        "scope": f"role assignments could not be read ({e})"})
+            continue
+        for a in doc.get("value", []) or []:
+            props = a.get("properties", {}) or {}
+            role_id = (props.get("roleDefinitionId", "") or "").rsplit("/", 1)[-1]
+            if role_id not in role_names:
+                try:
+                    rdoc = _get_json(
+                        f"https://management.azure.com/subscriptions/{sid}/"
+                        "providers/Microsoft.Authorization/roleDefinitions/"
+                        f"{role_id}?api-version=2022-04-01", token)
+                    role_names[role_id] = (
+                        rdoc.get("properties", {}) or {}).get("roleName", role_id)
+                except ValueError:
+                    role_names[role_id] = role_id
+            out.append({"subscription": sub["displayName"],
+                        "role": role_names[role_id],
+                        "scope": props.get("scope", "")})
+    return out
+
+
 def decode_jwt_payload(token: str) -> dict:
     """Decode a JWT's payload without verifying the signature. Used
     only to read the claims of a token that came from the provider's
@@ -233,9 +360,14 @@ def decode_jwt_payload(token: str) -> dict:
         return {}
 
 
-def check_gcp(private_key_pem: str, client_email: str) -> dict:
+def check_gcp(private_key_pem: str, client_email: str,
+              project_id: str | None = None) -> dict:
     """Validate a GCP service-account key by exchanging it for an
-    access token. Returns the validity dict."""
+    access token. Returns the validity dict. When a project id is
+    given, the token is also used to test which high-value IAM
+    permissions the service account actually holds on that project
+    (v1.5) — a measured permission list, not just the scope. A failed
+    IAM read leaves the scope-based result intact and says so."""
     try:
         resp = gcp_access_token(private_key_pem, client_email)
     except ValueError as e:
@@ -259,9 +391,23 @@ def check_gcp(private_key_pem: str, client_email: str) -> dict:
                 "last_used": None}
     scope = resp.get("scope", "")
     perms = ([scope] if scope else [])
-    return {"live": "live",
-            "reason": "the token endpoint issued an access token for "
-                      "this service-account key",
+    token = resp.get("access_token", "")
+    iam_note = None
+    if project_id and token:
+        try:
+            held = gcp_test_iam_permissions(token, project_id)
+            if held:
+                perms += [f"iam:{p}" for p in held]
+            else:
+                perms.append("iam: none of the 12 tested permissions held")
+        except ValueError as e:
+            iam_note = (f"the IAM policy could not be read ({e}) — the "
+                        "score uses the token scope only")
+    reason = ("the token endpoint issued an access token for this "
+              "service-account key")
+    if iam_note:
+        reason += f"; {iam_note}"
+    return {"live": "live", "reason": reason,
             "permissions": perms, "method": "oauth2-jwt-grant",
             "last_used": None}
 
@@ -302,8 +448,29 @@ def check_azure(tenant_id: str, client_id: str,
     roles = payload.get("roles", []) or []
     scp = payload.get("scp", "") or ""
     perms = list(roles) + ([f"scp:{s}" for s in scp.split()] if scp else [])
-    return {"live": "live",
-            "reason": "the token endpoint issued an access token for "
-                      "this client secret",
+    # v1.5: read the Azure RBAC role assignments for this service
+    # principal (the oid claim is its object id). A failed read leaves
+    # the app-roles result intact and says so — the token is still
+    # live, the RBAC roles are just unknown.
+    rbac_note = None
+    oid = payload.get("oid")
+    token = resp.get("access_token", "")
+    if oid and token:
+        try:
+            assignments = azure_rbac_roles(token, oid)
+            for a in assignments:
+                if a["role"]:
+                    perms.append(f"rbac:{a['role']} on {a['subscription']}")
+                else:
+                    rbac_note = a["scope"]
+        except ValueError as e:
+            rbac_note = (f"the RBAC role assignments could not be read "
+                         f"({e}) — the identity has no Reader access on "
+                         "any subscription, so its RBAC roles are unknown")
+    reason = ("the token endpoint issued an access token for this "
+              "client secret")
+    if rbac_note:
+        reason += f"; {rbac_note}"
+    return {"live": "live", "reason": reason,
             "permissions": perms, "method": "client-credentials",
             "last_used": None}

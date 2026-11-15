@@ -235,3 +235,161 @@ def test_ranking_azure_admin_role(monkeypatch):
     f = [g for g in findings if g["detector"] == "azure-client-secret"][0]
     ranked = rank(check_finding(f))
     assert ranked["risk"]["components"]["privilege"]["score"] == 40
+
+
+# ---------------------------------------------------------------- v1.5: IAM
+# policy read (measured permissions, not just the token scope).
+
+def _live_gcp_token(monkeypatch, scope=cloud.GCP_SCOPE_CLOUD_PLATFORM):
+    monkeypatch.setattr(
+        cloud, "gcp_access_token",
+        lambda pem, email, scope=scope:
+        {"access_token": "tok", "scope": scope, "expires_in": 3600})
+
+
+def test_gcp_test_iam_permissions(monkeypatch):
+    def fake_post(url, token, body):
+        assert "testIamPermissions" in url
+        assert body["permissions"] == cloud.GCP_RISKY_PERMISSIONS
+        return {"permissions": ["iam.serviceAccounts.actAs",
+                                "storage.buckets.delete"]}
+    monkeypatch.setattr(cloud, "_post_json", fake_post)
+    held = cloud.gcp_test_iam_permissions("tok", "my-project")
+    assert held == ["iam.serviceAccounts.actAs", "storage.buckets.delete"]
+
+
+def test_check_gcp_with_iam_admin(monkeypatch):
+    _live_gcp_token(monkeypatch)
+    monkeypatch.setattr(cloud, "_post_json",
+                        lambda url, token, body: {"permissions":
+                            ["iam.serviceAccounts.actAs"]})
+    v = cloud.check_gcp(_TEST_KEY, "sa@example.iam.gserviceaccount.com",
+                        "my-project")
+    assert v["live"] == "live"
+    assert "iam:iam.serviceAccounts.actAs" in v["permissions"]
+    f = {"provider": "gcp", "detector": "gcp-service-account",
+         "validity": v}
+    assert rank(f)["risk"]["components"]["privilege"]["score"] == 40
+
+
+def test_check_gcp_with_iam_some(monkeypatch):
+    _live_gcp_token(monkeypatch)
+    monkeypatch.setattr(cloud, "_post_json",
+                        lambda url, token, body: {"permissions":
+                            ["storage.buckets.delete"]})
+    v = cloud.check_gcp(_TEST_KEY, "sa@example.iam.gserviceaccount.com",
+                        "my-project")
+    f = {"provider": "gcp", "detector": "gcp-service-account",
+         "validity": v}
+    assert rank(f)["risk"]["components"]["privilege"]["score"] == 30
+
+
+def test_check_gcp_with_iam_none(monkeypatch):
+    _live_gcp_token(monkeypatch)
+    monkeypatch.setattr(cloud, "_post_json",
+                        lambda url, token, body: {"permissions": []})
+    v = cloud.check_gcp(_TEST_KEY, "sa@example.iam.gserviceaccount.com",
+                        "my-project")
+    assert "iam: none of the 12 tested permissions held" in v["permissions"]
+    f = {"provider": "gcp", "detector": "gcp-service-account",
+         "validity": v}
+    assert rank(f)["risk"]["components"]["privilege"]["score"] == 15
+
+
+def test_check_gcp_iam_read_failure_keeps_scope(monkeypatch):
+    _live_gcp_token(monkeypatch)
+
+    def failing(url, token, body):
+        raise ValueError("HTTP 403")
+    monkeypatch.setattr(cloud, "_post_json", failing)
+    v = cloud.check_gcp(_TEST_KEY, "sa@example.iam.gserviceaccount.com",
+                        "my-project")
+    assert v["live"] == "live"
+    assert v["permissions"] == [cloud.GCP_SCOPE_CLOUD_PLATFORM]
+    assert "could not be read" in v["reason"]
+    f = {"provider": "gcp", "detector": "gcp-service-account",
+         "validity": v}
+    assert rank(f)["risk"]["components"]["privilege"]["score"] == 40
+
+
+def _fake_jwt_with_oid(roles, oid):
+    payload = {"roles": roles, "oid": oid,
+               "aud": "https://management.azure.com"}
+    return ("eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ."
+            + cloud._b64url(json.dumps(payload).encode()) + ".sig")
+
+
+def test_azure_rbac_roles(monkeypatch):
+    def fake_get(url, token):
+        if url.startswith("https://management.azure.com/subscriptions?"
+                          ):
+            return {"value": [{"subscriptionId": "sub-1",
+                               "displayName": "Prod"},
+                              {"subscriptionId": "sub-2",
+                               "displayName": "Dev"}]}
+        if "/roleAssignments?" in url and "sub-1" in url:
+            return {"value": [{"properties": {
+                "principalId": "oid-1",
+                "roleDefinitionId": "/subscriptions/sub-1/providers/"
+                "Microsoft.Authorization/roleDefinitions/role-owner",
+                "scope": "/subscriptions/sub-1"}}]}
+        if "/roleAssignments?" in url:
+            return {"value": []}
+        if "/roleDefinitions/role-owner" in url:
+            return {"properties": {"roleName": "Owner"}}
+        raise AssertionError(f"unexpected {url}")
+    monkeypatch.setattr(cloud, "_get_json", fake_get)
+    roles = cloud.azure_rbac_roles("tok", "oid-1")
+    assert roles == [{"subscription": "Prod", "role": "Owner",
+                      "scope": "/subscriptions/sub-1"}]
+
+
+def test_check_azure_with_rbac_owner(monkeypatch):
+    monkeypatch.setattr(
+        cloud, "azure_access_token",
+        lambda t, c, s: {"access_token": _fake_jwt_with_oid([], "oid-1"),
+                         "token_type": "Bearer", "expires_in": 3600})
+    monkeypatch.setattr(cloud, "azure_rbac_roles",
+                        lambda token, oid: [{"subscription": "Prod",
+                                             "role": "Owner",
+                                             "scope": "/subscriptions/sub-1"}])
+    v = cloud.check_azure("tenant", "client", "secret")
+    assert v["live"] == "live"
+    assert "rbac:Owner on Prod" in v["permissions"]
+    f = {"provider": "azure", "detector": "azure-client-secret",
+         "validity": v}
+    assert rank(f)["risk"]["components"]["privilege"]["score"] == 40
+
+
+def test_check_azure_with_rbac_contributor(monkeypatch):
+    monkeypatch.setattr(
+        cloud, "azure_access_token",
+        lambda t, c, s: {"access_token": _fake_jwt_with_oid([], "oid-1"),
+                         "token_type": "Bearer", "expires_in": 3600})
+    monkeypatch.setattr(cloud, "azure_rbac_roles",
+                        lambda token, oid: [{"subscription": "Prod",
+                                             "role": "Contributor",
+                                             "scope": "/subscriptions/sub-1"}])
+    v = cloud.check_azure("tenant", "client", "secret")
+    f = {"provider": "azure", "detector": "azure-client-secret",
+         "validity": v}
+    assert rank(f)["risk"]["components"]["privilege"]["score"] == 35
+
+
+def test_check_azure_rbac_read_failure_keeps_app_roles(monkeypatch):
+    monkeypatch.setattr(
+        cloud, "azure_access_token",
+        lambda t, c, s: {"access_token": _fake_jwt_with_oid(
+            ["Directory.ReadWrite.All"], "oid-1"),
+            "token_type": "Bearer", "expires_in": 3600})
+
+    def failing(token, oid):
+        raise ValueError("HTTP 403")
+    monkeypatch.setattr(cloud, "azure_rbac_roles", failing)
+    v = cloud.check_azure("tenant", "client", "secret")
+    assert v["live"] == "live"
+    assert "Directory.ReadWrite.All" in v["permissions"]
+    assert "could not be read" in v["reason"]
+    f = {"provider": "azure", "detector": "azure-client-secret",
+         "validity": v}
+    assert rank(f)["risk"]["components"]["privilege"]["score"] == 40

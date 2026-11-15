@@ -40,6 +40,18 @@ GITLAB_WRITE_SCOPES = {"write_repository", "write_registry", "write_user",
                        "create_runner", "manage_runner", "ai_features"}
 # GCP: the cloud-platform OAuth scope is full access to the project.
 GCP_SCOPE_CLOUD_PLATFORM = "https://www.googleapis.com/auth/cloud-platform"
+# The GCP IAM permissions that are effectively admin (v1.5 — the
+# measured permission list from testIamPermissions).
+GCP_ADMIN_PERMISSIONS = {
+    "resourcemanager.projects.setIamPolicy",
+    "resourcemanager.projects.delete",
+    "iam.serviceAccounts.actAs",
+    "iam.serviceAccountKeys.create",
+    "iam.roles.update",
+}
+# Azure RBAC roles that are effectively admin at subscription scope
+# (v1.5 — the measured role assignments from the ARM API).
+AZURE_ADMIN_RBAC_ROLES = {"Owner", "User Access Administrator"}
 # Azure: application roles that are effectively admin (directory and
 # application write, and the ability to grant consent).
 AZURE_ADMIN_ROLES = {"Directory.ReadWrite.All", "Application.ReadWrite.All",
@@ -130,18 +142,40 @@ def _privilege(finding: dict) -> tuple[int, str]:
             return 25, "restricted key — limited, exact limits not visible via the API"
         return 20, "key type unknown"
     if provider == "gcp":
-        # The token's scope is the permission. cloud-platform is full
-        # access to every GCP API the project enables; a narrower scope
-        # is a smaller blast radius.
+        # v1.5: the measured IAM permissions come first — they are what
+        # the service account can actually do on its project. A key
+        # that holds an admin permission can grant itself anything.
+        held = {p[4:].strip() for p in permissions if p.startswith("iam:")}
+        if held and "none of the 12 tested permissions held" not in held:
+            admin = held & GCP_ADMIN_PERMISSIONS
+            if admin:
+                return 40, f"holds admin IAM permissions: {sorted(admin)}"
+            return 30, f"holds IAM permissions: {sorted(held)}"
+        if any(p.startswith("iam: none") for p in permissions):
+            return 15, ("holds none of the 12 tested IAM permissions — "
+                        "it may still hold others")
+        # No IAM read (no project id, or the read failed): the token's
+        # scope is the permission. cloud-platform is full access.
         if GCP_SCOPE_CLOUD_PLATFORM in permissions:
             return 40, "cloud-platform scope — full access to the project"
         if permissions:
             return 25, f"scope: {', '.join(permissions)}"
         return 20, "scope not reported by the token endpoint"
     if provider == "azure":
-        # The access token's roles claim is the application permission
-        # list. Directory and application write roles are effectively
-        # admin; any role is more than nothing.
+        # v1.5: the RBAC role assignments come first — they are what
+        # the service principal can actually do in Azure. An Owner or
+        # User Access Administrator can grant itself anything.
+        rbac = {p[5:].rsplit(" on ", 1)[0] for p in permissions
+                if p.startswith("rbac:")}
+        if rbac:
+            if rbac & AZURE_ADMIN_RBAC_ROLES:
+                return 40, f"RBAC roles: {sorted(rbac & AZURE_ADMIN_RBAC_ROLES)}"
+            if "Contributor" in rbac:
+                return 35, f"RBAC roles: {sorted(rbac)}"
+            return 25, f"RBAC roles: {sorted(rbac)}"
+        # No RBAC read: the access token's roles claim is the
+        # application permission list. Directory and application write
+        # roles are effectively admin; any role is more than nothing.
         roles = set(permissions)
         if roles & AZURE_ADMIN_ROLES:
             return 40, f"admin roles: {sorted(roles & AZURE_ADMIN_ROLES)}"

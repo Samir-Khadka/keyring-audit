@@ -497,7 +497,8 @@ def check_finding(finding: dict, verify: bool = True) -> dict:
         if finding["detector"] == "gcp-service-account":
             from .cloud import check_gcp
             out["validity"] = check_gcp(secret,
-                                        finding.get("client_email", ""))
+                                        finding.get("client_email", ""),
+                                        finding.get("project_id"))
         else:
             # A GCP API key: whether it works depends on which APIs
             # are enabled for its project, so a 403 cannot tell a

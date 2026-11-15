@@ -88,7 +88,13 @@ risk, and tells the owner exactly how to revoke or rotate them.
   no crypto dependency); an Azure secret with the client-credentials
   grant. The GCP token's scope and the Azure token's roles are
   reported as the permission list, so the ranking can score what the
-  credential can actually do.
+  credential can actually do. **v1.5:** the token is also used to
+  read the IAM policy itself — GCP tests which of 12 high-value IAM
+  permissions the service account holds on its project
+  (`testIamPermissions`), and Azure lists the RBAC role assignments
+  for the service principal across its subscriptions. A measured
+  permission list replaces the scope as the privilege evidence; a
+  failed IAM read leaves the scope-based score intact and says so.
 - **SaaS integrations.** OpenAI, Anthropic, Notion and Hugging Face
   API keys are detected and validated with one safe read-only call
   each (list models, `users/me`, `whoami`). A live AI key can run
@@ -247,9 +253,12 @@ Example output:
   project, so a 403 cannot tell a valid key from an invalid one). An
   Azure check against a tenant id that does not exist returns
   "unknown", not "dead", because the endpoint rejects the request
-  itself. The IAM policy read (which GCP roles / Azure role
-  assignments the identity holds) is not in v1.2 — the token's
-  scope/roles are the evidence.
+  itself. **v1.5:** the IAM policy read is in — GCP tests 12
+  high-value permissions on the project, Azure lists the RBAC role
+  assignments. The GCP test is a floor, not a ceiling (a key that
+  holds none of the 12 may still hold others); an Azure principal
+  with no Reader access on a subscription gets a 403 there, and the
+  report says its RBAC roles are unknown rather than empty.
 - SaaS integrations: the models endpoints do not say whether an
   OpenAI key is project-scoped or organisation-wide, or what its
   rate limits are — a live key is scored 35 on privilege because it

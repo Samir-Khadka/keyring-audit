@@ -1,5 +1,37 @@
 # Changelog
 
+## v1.5.0 — 2026-11-15
+
+The last honest-limit item: the IAM policy read.
+
+- GCP: after the token exchange, `testIamPermissions` tests which
+  of 12 high-value IAM permissions the service account holds on its
+  project (delete project, setIamPolicy, actAs, create service-account
+  keys, delete buckets/VMs/databases, read secrets). An admin
+  permission scores 40, any held permission 30, none of the 12 held
+  15. A failed IAM read leaves the scope-based score intact and says
+  so. 231 tests.
+- Azure: after the token exchange, the RBAC role assignments for the
+  service principal are listed across every subscription the token
+  can see (Owner / User Access Administrator 40, Contributor 35,
+  any role 25). A principal with no Reader access on a subscription
+  gets a 403 there, and the report says its RBAC roles are unknown
+  rather than empty.
+- **Bugfix (found by the dogfood):** the private-key regex
+  `(?:\\n|[^"])*?` backtracked catastrophically on a 2048-bit PEM —
+  the scanner hung for minutes on a 2 KB file. The two branches
+  overlapped (a backslash is both `\\n`'s first char and a `[^"]`
+  char), so a lazy group over a long key explored exponentially many
+  paths. Replaced with a plain `[^"]*?` (which already matches the
+  `\n` escapes) plus a properly optional trailing `(?:\\n)?`. A
+  regression test pins a 2048-bit key to under a second.
+- Dogfood: a demo repo with a fresh 2048-bit GCP key and a fake Azure
+  secret scanned in 1.3 seconds — the GCP key is dead (invalid_grant,
+  correctly, so no IAM read ran) and the Azure secret is unknown
+  (fake tenant). The IAM read itself is proven by mocked tests; the
+  endpoints were verified live (testIamPermissions and the Azure
+  subscriptions endpoint both answer 401 to a bad token).
+
 ## v1.4.0 — 2026-11-15
 
 Phase 6 coverage, fifth and final piece: Slack/GitLab connectors.
