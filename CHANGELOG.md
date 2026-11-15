@@ -1,5 +1,29 @@
 # Changelog
 
+## v1.3.0 — 2026-11-15
+
+Phase 6 coverage, fourth piece: SaaS integrations.
+
+- OpenAI, Anthropic, Notion and Hugging Face API keys are detected
+  and validated with one safe read-only call each (list models,
+  `users/me`, `whoami`). A live AI key scores 35 on privilege — it
+  can call any model and spend on the account, and a leak can run
+  usage up into thousands of dollars within hours, so a verified-live
+  key lands High or Critical and the guide says to revoke it within
+  minutes. A Notion token's type is read from `users/me` (a personal
+  access token acts as the user, 35; a bot token is scoped to shared
+  pages, 25); a Hugging Face token's role is read from `whoami`
+  (write 35, read 15). 213 tests.
+- Honest limits: the models endpoints do not say whether an OpenAI
+  key is project-scoped or organisation-wide; a Notion token's pages
+  are not listed.
+- Dogfood: a demo repo with one fake key per provider. All four were
+  verified DEAD against the real provider endpoints (401 from each),
+  in ~2 seconds. The first run timed out on all four (a transient
+  sandbox-proxy stall); the retry was fast — the checks themselves
+  are correct, and a network stall is reported as "unknown", never
+  as dead.
+
 ## v1.2.0 — 2026-11-15
 
 Phase 6 coverage, third piece: cloud accounts (GCP, Azure).

@@ -89,6 +89,12 @@ risk, and tells the owner exactly how to revoke or rotate them.
   grant. The GCP token's scope and the Azure token's roles are
   reported as the permission list, so the ranking can score what the
   credential can actually do.
+- **SaaS integrations.** OpenAI, Anthropic, Notion and Hugging Face
+  API keys are detected and validated with one safe read-only call
+  each (list models, `users/me`, `whoami`). A live AI key can run
+  usage up into thousands of dollars within hours, so a verified-live
+  OpenAI or Anthropic key scores 35 on privilege and lands High or
+  Critical — rotate it within minutes, not hours.
 - **Assign owners.** Every finding names who is responsible: AWS
   Owner/Team tags first, then the commit author, then `git blame` for
   working-tree and staged lines (an uncommitted line names the local
@@ -181,7 +187,7 @@ Example output:
    own is unauthorised access in most jurisdictions — this tool refuses
    to validate a credential it was not given by its owner.
 
-## Honest limits (v1.2)
+## Honest limits (v1.3)
 
 - The staged scan reads added lines only — a secret already in history
   is not the staged diff's business (clean it separately; a full scan
@@ -234,6 +240,12 @@ Example output:
   itself. The IAM policy read (which GCP roles / Azure role
   assignments the identity holds) is not in v1.2 — the token's
   scope/roles are the evidence.
+- SaaS integrations: the models endpoints do not say whether an
+  OpenAI key is project-scoped or organisation-wide, or what its
+  rate limits are — a live key is scored 35 on privilege because it
+  can spend, not because its exact scope is known. A Notion token's
+  type (bot vs user) is read from `users/me`; the pages it can reach
+  are not listed. A Hugging Face token's role is read from `whoami`.
 
 - Validity checks are implemented for GitHub, AWS, Slack, GitLab and
   Stripe. Private keys and JWTs are detected but have no live check —
@@ -255,8 +267,7 @@ Example output:
 
 ## Roadmap
 
-- **Phase 6 (remaining):** SaaS integrations, and Slack/GitLab
-  connectors.
+- **Phase 6 (remaining):** Slack/GitLab connectors.
 - **The combined install question is closed:** the two repos stay
   separate. Keyring Audit and Agent Gateway share the identity graph
   (`agents --format json`), not a repo.

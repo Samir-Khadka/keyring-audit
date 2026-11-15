@@ -512,6 +512,18 @@ def check_finding(finding: dict, verify: bool = True) -> dict:
         from .cloud import check_azure
         out["validity"] = check_azure(finding.get("tenant_id", ""),
                                       finding.get("client_id", ""), secret)
+    elif provider == "openai":
+        from .saas import check_openai
+        out["validity"] = check_openai(secret)
+    elif provider == "anthropic":
+        from .saas import check_anthropic
+        out["validity"] = check_anthropic(secret)
+    elif provider == "notion":
+        from .saas import check_notion
+        out["validity"] = check_notion(secret)
+    elif provider == "huggingface":
+        from .saas import check_huggingface
+        out["validity"] = check_huggingface(secret)
     else:
         out["validity"] = {"live": "unknown",
                            "reason": "no validity check for this provider in v0.2",

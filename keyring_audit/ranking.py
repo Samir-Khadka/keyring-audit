@@ -148,6 +148,25 @@ def _privilege(finding: dict) -> tuple[int, str]:
         if roles:
             return 25, f"roles: {', '.join(sorted(roles))}"
         return 15, "no application roles on the token"
+    if provider in ("openai", "anthropic"):
+        # A live AI key can call any model and spend on the account —
+        # a leak can run usage up into thousands of dollars within
+        # hours, so a verified-live key scores high.
+        return 35, "can call any model and spend on the account"
+    if provider == "notion":
+        # A personal access token acts as the user (everything the
+        # user can open); a bot token is scoped to shared pages.
+        if any(p.startswith("type: user") for p in permissions):
+            return 35, "personal access token — acts as the user"
+        if any(p.startswith("type: bot") for p in permissions):
+            return 25, "bot token — scoped to shared pages"
+        return 20, "token type not reported"
+    if provider == "huggingface":
+        if any(p.startswith("role: write") for p in permissions):
+            return 35, "write role — can push models and datasets"
+        if any(p.startswith("role: read") for p in permissions):
+            return 15, "read role — can read public and gated repos"
+        return 20, "role not reported"
     return 20, "privilege unknown for this provider"
 
 

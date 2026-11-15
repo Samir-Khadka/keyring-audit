@@ -113,6 +113,28 @@ DETECTORS: list[Detector] = [
     # --- Stripe ---------------------------------------------------------
     Detector("stripe-live", "stripe", r"(?:sk|rk)_live_[A-Za-z0-9]{16,}",
              description="Stripe live secret/restricted key"),
+    # --- SaaS: AI providers -------------------------------------------
+    # OpenAI: project keys (sk-proj-…), service-account and admin keys
+    # (sk-svcacct-…, sk-admin-…), and the legacy account-wide key
+    # (sk- + 48 alphanumerics, 51 total). The legacy regex cannot match
+    # an Anthropic key: sk-ant-… has a dash after "ant", which breaks
+    # the 48-char alphanumeric run — but the Anthropic detector is
+    # listed first anyway, so a Claude key is never read as OpenAI.
+    Detector("anthropic-api-key", "anthropic", r"sk-ant-[A-Za-z0-9_-]{20,}",
+             description="Anthropic (Claude) API key"),
+    Detector("openai-project-key", "openai",
+             r"sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}",
+             description="OpenAI project / service-account / admin key"),
+    Detector("openai-legacy-key", "openai", r"sk-[A-Za-z0-9]{48}",
+             description="OpenAI legacy account-wide API key"),
+    # --- SaaS: Notion + Hugging Face ----------------------------------
+    # Notion: ntn_… (current, since Sep 2024) or secret_… (older, still
+    # works). Notion says to treat tokens as opaque, so the length is
+    # a minimum, not an exact count.
+    Detector("notion-token", "notion", r"(?:secret_|ntn_)[A-Za-z0-9]{32,}",
+             description="Notion integration token"),
+    Detector("huggingface-token", "huggingface", r"hf_[A-Za-z0-9]{30,}",
+             description="Hugging Face access token"),
     # --- GCP ------------------------------------------------------------
     # A GCP API key: AIza + 35 base64url chars. Detected, but its
     # validity is always "unknown" — whether a key works depends on

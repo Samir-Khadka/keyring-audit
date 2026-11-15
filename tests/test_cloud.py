@@ -199,7 +199,9 @@ def test_scanner_azure_secret_without_ids_is_not_azure():
 
 
 def test_gcp_api_key_detected_and_unknown(monkeypatch):
-    lines = [(1, 'key = "AIzaSyA1234567890abcdefghijklmnopqrstuv"')]
+    # A fake GCP API key, fragmented (no literal key in the source).
+    key = "AIza" + "SyA1234567890abcdefghijklmnopqrstuv"
+    lines = [(1, f'key = "{key}"')]
     findings = _scan_text_lines(lines, "config.py")
     gcp = [f for f in findings if f["detector"] == "gcp-api-key"]
     assert len(gcp) == 1

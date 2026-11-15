@@ -366,6 +366,33 @@ def guide(finding: dict) -> list[str]:
             "a client secret — a secret in a repo is the leak this tool "
             "exists to catch.",
         ]
+    if provider in ("openai", "anthropic"):
+        name = "OpenAI" if provider == "openai" else "Anthropic"
+        return [
+            f"1. Revoke the key NOW — a live AI key can run usage up into "
+            f"thousands of dollars within hours. {name} → API keys → "
+            "Revoke.",
+            "2. Create a replacement key, scoped to the project that "
+            "needs it, and update every place that used the old one.",
+            "3. Check the usage dashboard for unexpected spend since the "
+            "key leaked.",
+        ]
+    if provider == "notion":
+        return [
+            "1. Delete the token: Notion → Settings → Connections → your "
+            "connection → Delete. A personal access token is deleted at "
+            "notion.so/developers/tokens.",
+            "2. Create a replacement and share only the pages it needs "
+            "with it — an internal connection sees nothing until a page "
+            "is shared with it.",
+        ]
+    if provider == "huggingface":
+        return [
+            "1. Delete the token: Hugging Face → Settings → Access "
+            "Tokens → Delete.",
+            "2. Create a replacement with the minimum role (read unless "
+            "it must push), and update every place that used the old one.",
+        ]
     return [
         "1. Revoke this credential at the provider, and replace it with a "
         "new one with the minimum permissions.",
