@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "keyring-audit"
+version = "0.1.0"
+description = "What credentials exist, who owns them, what can each one reach, and which ones can I safely kill or rotate today?"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+authors = [{name = "Samir Khadka"}]
+keywords = ["secrets", "non-human-identity", "security", "scanner"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+]
+dependencies = []  # stdlib only — the scanner has no third-party deps
+
+[project.scripts]
+keyring-audit = "keyring_audit.__main__:cli"
+
+[project.urls]
+Homepage = "https://github.com/Samir-Khadka/keyring-audit"
+
+[tool.setuptools.packages.find]
+include = ["keyring_audit*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

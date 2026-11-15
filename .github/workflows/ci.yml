@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: python -m pip install pytest
+      - name: Tests
+        run: python -m pytest tests/ -q
+      - name: Generate scan fixtures (fake secrets, generated not committed)
+        run: python scripts/make_scan_fixtures.py
+      - name: Dogfood — scan the fixture repo (git history + working tree)
+        run: |
+          python -m keyring_audit scan fixtures/repo --no-verify --format json \
+            | python -c "import json,sys; d=json.load(sys.stdin); n=len(d['findings']); print(f'dogfood: {n} fixture findings'); assert n == 6, f'expected 6, got {n}'"
