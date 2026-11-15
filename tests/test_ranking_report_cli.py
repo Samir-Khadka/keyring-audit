@@ -113,6 +113,58 @@ def test_stripe_restricted_key_scores_mid():
     assert r["risk"]["components"]["privilege"]["score"] == 25
 
 
+# ---------------------------------------------------------------- v0.4 blast radius
+def _aws_finding(blast_radius, permissions=None):
+    return _finding(provider="aws", detector="aws-access-key-id",
+                    validity={"live": "live", "reason": "x",
+                              "permissions": permissions or [],
+                              "method": "simulate",
+                              "blast_radius": blast_radius})
+
+
+def test_aws_simulation_privesc_scores_max():
+    r = rank(_aws_finding({"method": "simulate",
+                           "allowed": ["iam:CreateUser", "iam:PassRole"],
+                           "denied": ["s3:DeleteBucket"]}))
+    assert r["risk"]["components"]["privilege"]["score"] == 40
+    assert "escalate privilege" in r["risk"]["components"]["privilege"]["why"]
+
+
+def test_aws_simulation_destructive_scores_35():
+    r = rank(_aws_finding({"method": "simulate",
+                           "allowed": ["s3:DeleteBucket"],
+                           "denied": ["iam:CreateUser"]}))
+    assert r["risk"]["components"]["privilege"]["score"] == 35
+    assert "destroy resources" in r["risk"]["components"]["privilege"]["why"]
+
+
+def test_aws_simulation_nothing_allowed_scores_low():
+    r = rank(_aws_finding({"method": "simulate", "allowed": [],
+                           "denied": ["iam:CreateUser"]}))
+    assert r["risk"]["components"]["privilege"]["score"] == 10
+
+
+def test_aws_no_simulation_falls_back_to_policy_names():
+    # Simulation not permitted: the policy names decide, as before.
+    r = rank(_finding(provider="aws", detector="aws-access-key-id",
+                      validity={"live": "live", "reason": "x",
+                                "permissions": ["managed policy: AdministratorAccess"],
+                                "method": "iam",
+                                "blast_radius": {"method": "none",
+                                                 "note": "not permitted"}}))
+    assert r["risk"]["components"]["privilege"]["score"] == 40
+
+
+def test_render_text_shows_blast_radius():
+    ranked = rank_all([_aws_finding(
+        {"method": "simulate", "allowed": ["iam:CreateUser"],
+         "denied": ["s3:DeleteBucket"]},
+        permissions=["simulated: can iam:CreateUser"])])
+    out = render(ranked, [], "fixtures/repo", "text")
+    assert "blast radius (simulation): can iam:CreateUser" in out
+    assert "partial evidence" in out
+
+
 # ---------------------------------------------------------------- remediation
 def test_github_guide_names_the_revoke_page():
     steps = guide(_finding())

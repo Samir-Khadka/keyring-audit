@@ -1,4 +1,4 @@
-"""Risk ranking (Keyring Audit v0.2).
+"""Risk ranking (Keyring Audit v0.4).
 
 Score 0–100, higher = riskier, from four measured inputs. Every
 component is shown in the output so the score is auditable, not a black
@@ -23,6 +23,14 @@ GITHUB_WRITE_SCOPES = {"write:org", "write:public_key", "write:repo_hook",
                        "write:discussion", "gist", "user", "admin:public_key"}
 
 AWS_ADMIN_POLICIES = ("AdministratorAccess",)
+
+# Simulated actions that let a key escalate its own privilege.
+AWS_PRIVESC_ACTIONS = {"iam:CreateUser", "iam:AttachUserPolicy",
+                       "iam:PutUserPolicy", "iam:CreateAccessKey",
+                       "iam:PassRole"}
+# Simulated actions that destroy resources without escalating privilege.
+AWS_DESTRUCTIVE_ACTIONS = {"s3:DeleteBucket", "ec2:TerminateInstances",
+                           "rds:DeleteDBInstance"}
 
 # GitLab scopes that mean full account control.
 GITLAB_ADMIN_SCOPES = {"api", "sudo", "admin_mode"}
@@ -53,6 +61,21 @@ def _privilege(finding: dict) -> tuple[int, str]:
             return 15, f"probed permissions: {', '.join(permissions)}"
         return 5, "public information only"
     if provider == "aws":
+        # The simulation is the strongest evidence: it evaluates the
+        # effective policy. A key that can escalate its own privilege
+        # is effectively admin, whatever its policy names say.
+        blast = validity.get("blast_radius") or {}
+        if blast.get("method") == "simulate":
+            allowed = set(blast.get("allowed") or [])
+            privesc = allowed & AWS_PRIVESC_ACTIONS
+            if privesc:
+                return 40, ("can escalate privilege (simulation): "
+                            f"{', '.join(sorted(privesc))}")
+            destructive = allowed & AWS_DESTRUCTIVE_ACTIONS
+            if destructive:
+                return 35, ("can destroy resources (simulation): "
+                            f"{', '.join(sorted(destructive))}")
+            return 10, "simulation: no high-risk actions allowed"
         joined = " ".join(permissions)
         if any(a in joined for a in AWS_ADMIN_POLICIES):
             return 40, "AdministratorAccess attached"

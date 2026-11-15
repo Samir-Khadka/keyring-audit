@@ -1,4 +1,4 @@
-"""Repo scanning (Keyring Audit v0.3).
+"""Repo scanning (Keyring Audit v0.4).
 
 Four sources:
 - the working tree (every file except .git/, including gitignored files

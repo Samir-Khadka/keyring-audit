@@ -1,4 +1,4 @@
-"""AWS Signature Version 4 signing, stdlib only (Keyring Audit v0.1).
+"""AWS Signature Version 4 signing, stdlib only (Keyring Audit v0.4).
 
 The CLI validates AWS keys without boto3: one signed GET to STS
 (GetCallerIdentity) proves the key is live, and signed POSTs to the IAM
@@ -123,6 +123,32 @@ def sts_get_caller_identity(access_key: str, secret_key: str,
     text = lambda tag: (result.findtext(f"s:{tag}", namespaces=ns) or "")
     return {"account": text("Account"), "arn": text("Arn"),
             "user_id": text("UserId")}
+
+
+def simulate_principal_policy(access_key: str, secret_key: str, arn: str,
+                              actions: list[str],
+                              session_token: str | None = None) -> list[dict]:
+    """Simulate named actions for a principal (one IAM Query call for
+    all actions). Returns [{"action": ..., "decision": ...}] where the
+    decision is "allowed", "implicitDeny" or "explicitDeny".
+
+    The simulator does NOT read resource-based policies, so "allowed"
+    is partial evidence — the caller must say so. Raises ValueError on
+    a 403 (the key cannot call SimulatePrincipalPolicy).
+    """
+    import xml.etree.ElementTree as ET
+
+    params: dict[str, str] = {"PolicySourceArn": arn}
+    for i, action in enumerate(actions, 1):
+        params[f"ActionNames.member.{i}"] = action
+    root = iam_query(access_key, secret_key, "SimulatePrincipalPolicy",
+                     params, session_token)
+    ns = {"i": "https://iam.amazonaws.com/doc/2010-05-08/"}
+    out = []
+    for m in root.findall(".//i:EvaluationResults/i:member", ns):
+        out.append({"action": m.findtext("i:EvalActionName", namespaces=ns),
+                    "decision": m.findtext("i:EvalDecision", namespaces=ns)})
+    return out
 
 
 def iam_query(access_key: str, secret_key: str, action: str,

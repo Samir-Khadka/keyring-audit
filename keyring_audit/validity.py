@@ -1,4 +1,4 @@
-"""Validity + permissions checks (Keyring Audit v0.2).
+"""Validity + permissions checks (Keyring Audit v0.4).
 
 One identity call per credential proves it is live; a second, read-only
 call lists what it can do. Nothing else is fetched — no data reads, ever.
@@ -25,6 +25,15 @@ AWS (verified against the AWS docs pattern, 2026-11-15):
 - Usage = `iam:GetAccessKeyLastUsed` per key.
 - A key without IAM read gets "unknown (IAM read denied)" — never a
   guessed permission list.
+- Blast radius (v0.4): `iam:SimulatePrincipalPolicy` is called for the
+  8 named high-risk actions (AWS_RISKY_ACTIONS) right after the
+  identity call, for every principal type, so a key that cannot read
+  IAM still gets its blast radius measured when simulation is allowed.
+  The result is a `blast_radius` dict (method "simulate" with allowed /
+  denied lists, or method "none" with the reason) and "simulated: can
+  <action>" permission entries. The ranking scores a simulated
+  privilege-escalation action at 40 — a key that can escalate is
+  effectively admin, whatever its policy names say.
 
 Slack (verified against Slack's OAuth docs, 2026-11-15):
 - `POST /api/auth.test` = validity. Slack returns HTTP 200 even for a
@@ -178,6 +187,30 @@ def check_aws(key_id: str, secret: str | None,
     parts = arn.split("/")
     user_name = parts[-1] if len(parts) > 1 else None
     is_user = ":user/" in arn
+    # Blast radius: simulate the named high-risk actions for this
+    # principal (one call for all of them). Runs for every principal
+    # type, before the policy listing, so a key that cannot read IAM
+    # still gets its blast radius measured when simulation is allowed.
+    blast_radius: dict = {"method": "none",
+                          "note": "simulation not attempted"}
+    sim_permissions: list[str] = []
+    try:
+        sim = aws_sign.simulate_principal_policy(
+            key_id, secret, arn, AWS_RISKY_ACTIONS, session_token)
+        allowed = [e["action"] for e in sim if e["decision"] == "allowed"]
+        denied = [e["action"] for e in sim if e["decision"] != "allowed"]
+        blast_radius = {"method": "simulate", "allowed": allowed,
+                        "denied": denied,
+                        "note": "simulation does not read resource-based "
+                                "policies — 'allowed' is partial evidence"}
+        sim_permissions = [f"simulated: can {a}" for a in allowed]
+    except ValueError:
+        blast_radius = {"method": "none",
+                        "note": "simulation not permitted "
+                                "(iam:SimulatePrincipalPolicy denied)"}
+    except (ConnectionError, OSError) as e:
+        blast_radius = {"method": "none",
+                        "note": f"simulation failed: {e}"}
     permissions: list[str] = []
     method = "sts"
     last_used = None
@@ -201,17 +234,28 @@ def check_aws(key_id: str, secret: str | None,
                     permissions.append(f"inline policy: {p.text}")
             method = "iam"
         except ValueError as e:
-            permissions = []
-            method = "sts"
             if "access denied" in str(e):
+                if sim_permissions:
+                    return {"live": "live",
+                            "reason": f"authenticated as {arn} (IAM read "
+                                      "denied; simulation found "
+                                      f"{len(sim_permissions)} high-risk "
+                                      "action(s) allowed)",
+                            "permissions": sim_permissions,
+                            "method": "simulate", "identity": identity,
+                            "blast_radius": blast_radius}
                 return {"live": "live",
                         "reason": f"authenticated as {arn} (IAM read denied — "
                                   "permissions unknown)",
                         "permissions": [], "method": "sts",
-                        "identity": identity}
+                        "identity": identity, "blast_radius": blast_radius}
+            permissions = []
+            method = "sts"
         except (ConnectionError, OSError) as e:
             return {"live": "live", "reason": f"authenticated as {arn} (IAM lookup failed: {e})",
-                    "permissions": [], "method": "sts", "identity": identity}
+                    "permissions": sim_permissions,
+                    "method": "simulate" if sim_permissions else "sts",
+                    "identity": identity, "blast_radius": blast_radius}
         # Usage: last-used time for this key.
         try:
             import xml.etree.ElementTree as ET
@@ -223,10 +267,14 @@ def check_aws(key_id: str, secret: str | None,
             last_used = None
     else:
         # Assumed-role / federated credentials: no IAM user policies to list.
-        method = "sts"
+        method = "simulate" if sim_permissions else "sts"
+    if method == "sts" and sim_permissions:
+        # The policy listing failed but the simulation provided evidence.
+        method = "simulate"
     result: dict = {"live": "live", "reason": f"authenticated as {arn}",
-                    "permissions": permissions, "method": method,
-                    "identity": identity}
+                    "permissions": permissions + sim_permissions,
+                    "method": method,
+                    "identity": identity, "blast_radius": blast_radius}
     if last_used:
         result["last_used"] = last_used
     return result

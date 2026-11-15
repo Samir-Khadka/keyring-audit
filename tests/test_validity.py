@@ -149,9 +149,18 @@ def test_aws_live_key_lists_policies(monkeypatch):
         return [attached, inline, last_used][calls["n"] - 1]
     monkeypatch.setattr(aws_sign, "sts_get_caller_identity", fake_sts)
     monkeypatch.setattr(aws_sign, "iam_query", fake_query)
+    # The simulation runs before the policy listing; stub it so the
+    # iam_query call order above stays intact.
+    monkeypatch.setattr(aws_sign, "simulate_principal_policy", lambda *a, **k: [
+        {"action": "iam:CreateUser", "decision": "allowed"},
+        {"action": "s3:DeleteBucket", "decision": "implicitDeny"}])
     r = check_aws(AWS_KEY_ID, AWS_SECRET)
     assert r["live"] == "live"
     assert any("AdministratorAccess" in p for p in r["permissions"])
+    assert "simulated: can iam:CreateUser" in r["permissions"]
+    assert r["blast_radius"]["method"] == "simulate"
+    assert r["blast_radius"]["allowed"] == ["iam:CreateUser"]
+    assert r["blast_radius"]["denied"] == ["s3:DeleteBucket"]
     assert r["last_used"] == "2026-11-14T09:00:00Z"
 
 
@@ -164,10 +173,112 @@ def test_aws_iam_denied_reports_unknown_permissions(monkeypatch):
         raise ValueError("access denied (the key cannot read IAM)")
     monkeypatch.setattr(aws_sign, "sts_get_caller_identity", fake_sts)
     monkeypatch.setattr(aws_sign, "iam_query", fake_query)
+    monkeypatch.setattr(aws_sign, "simulate_principal_policy",
+                        lambda *a, **k: [])
     r = check_aws(AWS_KEY_ID, AWS_SECRET)
     assert r["live"] == "live"  # the key IS live; only its permissions are unknown
     assert r["permissions"] == []
     assert "IAM read denied" in r["reason"]
+    assert r["blast_radius"]["method"] == "simulate"
+    assert r["blast_radius"]["allowed"] == []
+
+
+def test_aws_iam_denied_but_simulation_allowed(monkeypatch):
+    # The key cannot read IAM, but it CAN simulate itself — the blast
+    # radius is still measured, and the report says how.
+    def fake_sts(*a, **k):
+        return {"account": "123456789012",
+                "arn": "arn:aws:iam::123456789012:user/deployer",
+                "user_id": "AIDACKCEVSQ6C2EXAMPLE"}
+    def fake_query(*a, **k):
+        raise ValueError("access denied (the key cannot read IAM)")
+    monkeypatch.setattr(aws_sign, "sts_get_caller_identity", fake_sts)
+    monkeypatch.setattr(aws_sign, "iam_query", fake_query)
+    monkeypatch.setattr(aws_sign, "simulate_principal_policy", lambda *a, **k: [
+        {"action": "iam:CreateUser", "decision": "allowed"},
+        {"action": "s3:DeleteBucket", "decision": "implicitDeny"}])
+    r = check_aws(AWS_KEY_ID, AWS_SECRET)
+    assert r["live"] == "live"
+    assert r["permissions"] == ["simulated: can iam:CreateUser"]
+    assert r["method"] == "simulate"
+    assert "simulation found 1 high-risk action(s) allowed" in r["reason"]
+
+
+def test_aws_simulation_not_permitted_falls_back_to_policy_names(monkeypatch):
+    import xml.etree.ElementTree as ET
+
+    def fake_sts(*a, **k):
+        return {"account": "123456789012",
+                "arn": "arn:aws:iam::123456789012:user/deployer",
+                "user_id": "AIDACKCEVSQ6C2EXAMPLE"}
+    attached = ET.fromstring(
+        '<ListAttachedUserPoliciesResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/">'
+        '<ListAttachedUserPoliciesResult><AttachedPolicies><member>'
+        '<PolicyName>AdministratorAccess</PolicyName>'
+        '<PolicyArn>arn:aws:iam::aws:policy/AdministratorAccess</PolicyArn>'
+        '</member></AttachedPolicies></ListAttachedUserPoliciesResult>'
+        '<ResponseMetadata><RequestId>x</RequestId></ResponseMetadata>'
+        '</ListAttachedUserPoliciesResponse>')
+    inline = ET.fromstring(
+        '<ListUserPoliciesResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/">'
+        '<ListUserPoliciesResult><PolicyNames/></ListUserPoliciesResult>'
+        '<ResponseMetadata><RequestId>x</RequestId></ResponseMetadata>'
+        '</ListUserPoliciesResponse>')
+    last_used = ET.fromstring(
+        '<GetAccessKeyLastUsedResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/">'
+        '<GetAccessKeyLastUsedResult><AccessKeyLastUsed>'
+        '<LastUsedDate>2026-11-14T09:00:00Z</LastUsedDate>'
+        '</AccessKeyLastUsed></GetAccessKeyLastUsedResult>'
+        '<ResponseMetadata><RequestId>x</RequestId></ResponseMetadata>'
+        '</GetAccessKeyLastUsedResponse>')
+    calls = {"n": 0}
+    def fake_query(*a, **k):
+        calls["n"] += 1
+        return [attached, inline, last_used][calls["n"] - 1]
+    monkeypatch.setattr(aws_sign, "sts_get_caller_identity", fake_sts)
+    monkeypatch.setattr(aws_sign, "iam_query", fake_query)
+    def denied(*a, **k):
+        raise ValueError("access denied (the key cannot read IAM)")
+    monkeypatch.setattr(aws_sign, "simulate_principal_policy", denied)
+    r = check_aws(AWS_KEY_ID, AWS_SECRET)
+    assert r["live"] == "live"
+    assert any("AdministratorAccess" in p for p in r["permissions"])
+    assert r["blast_radius"]["method"] == "none"
+    assert "not permitted" in r["blast_radius"]["note"]
+
+
+def test_simulate_principal_policy_parses_decisions(monkeypatch):
+    import xml.etree.ElementTree as ET
+
+    seen = {}
+    def fake_query(access_key, secret_key, action, params, session_token=None):
+        seen.update({"action": action, "params": params})
+        return ET.fromstring(
+            '<SimulatePrincipalPolicyResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/">'
+            '<SimulatePrincipalPolicyResult><EvaluationResults>'
+            '<member><EvalActionName>iam:CreateUser</EvalActionName>'
+            '<EvalDecision>allowed</EvalDecision></member>'
+            '<member><EvalActionName>s3:DeleteBucket</EvalActionName>'
+            '<EvalDecision>implicitDeny</EvalDecision></member>'
+            '<member><EvalActionName>iam:PassRole</EvalActionName>'
+            '<EvalDecision>explicitDeny</EvalDecision></member>'
+            '</EvaluationResults></SimulatePrincipalPolicyResult>'
+            '<ResponseMetadata><RequestId>x</RequestId></ResponseMetadata>'
+            '</SimulatePrincipalPolicyResponse>')
+    monkeypatch.setattr(aws_sign, "iam_query", fake_query)
+    out = aws_sign.simulate_principal_policy(
+        AWS_KEY_ID, AWS_SECRET,
+        "arn:aws:iam::123456789012:user/deployer",
+        ["iam:CreateUser", "s3:DeleteBucket", "iam:PassRole"])
+    assert seen["action"] == "SimulatePrincipalPolicy"
+    assert seen["params"]["PolicySourceArn"] == \
+        "arn:aws:iam::123456789012:user/deployer"
+    assert seen["params"]["ActionNames.member.1"] == "iam:CreateUser"
+    assert seen["params"]["ActionNames.member.3"] == "iam:PassRole"
+    assert out == [
+        {"action": "iam:CreateUser", "decision": "allowed"},
+        {"action": "s3:DeleteBucket", "decision": "implicitDeny"},
+        {"action": "iam:PassRole", "decision": "explicitDeny"}]
 
 
 # ---------------------------------------------------------------- check_finding

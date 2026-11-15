@@ -1,4 +1,4 @@
-"""Keyring Audit CLI (v0.3).
+"""Keyring Audit CLI (v0.4).
 
     keyring-audit scan <path> [--verify|--no-verify]
                              [--format text|json|md] [--output FILE]

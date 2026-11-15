@@ -20,7 +20,11 @@ risk, and tells the owner exactly how to revoke or rotate them.
   header; fine-grained tokens (which return no scope header) are
   probed endpoint by endpoint, and the report says which method was
   used. AWS permissions come from IAM policy reads and
-  `GetAccessKeyLastUsed`.
+  `GetAccessKeyLastUsed` — and from `iam:SimulatePrincipalPolicy`
+  against 8 named high-risk actions, which measures what the key can
+  actually do even when it cannot read IAM. A simulated "allowed" is
+  partial evidence (the simulator does not read resource-based
+  policies) and the report says so.
 - **Rank risk.** 0–100 from four measured inputs — privilege, exposure,
   age, usage — with every component shown, so the score is auditable.
 - **Remediate.** A revoke/rotate guide per credential. AWS rotation is
@@ -111,13 +115,17 @@ Example output:
    own is unauthorised access in most jurisdictions — this tool refuses
    to validate a credential it was not given by its owner.
 
-## Honest limits (v0.3)
+## Honest limits (v0.4)
 
 - The staged scan reads added lines only — a secret already in history
   is not the staged diff's business (clean it separately; a full scan
   catches it).
 - `--repo` does a full clone, so a very large repo takes a while; there
   is no shallow option because the history scan needs the history.
+- The AWS simulation does not read resource-based policies, so a
+  simulated "allowed" is partial evidence — the report says so on
+  every finding it applies to. When simulation is not permitted, the
+  report falls back to the policy names.
 
 - Validity checks are implemented for GitHub, AWS, Slack, GitLab and
   Stripe. Private keys and JWTs are detected but have no live check —
@@ -139,8 +147,6 @@ Example output:
 
 ## Roadmap
 
-- **Phase 2:** full blast-radius mapping (AWS policy simulation for
-  named high-risk actions).
 - **Phase 3:** ownership (commit history, cloud tags) + the 0–100 score.
 - **Phase 4:** safe remediation — guided rotation with dry runs and
   approvals, PRs replacing hardcoded keys.

@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.4.0 — 2026-11-15
+
+Phase 2: AWS blast-radius mapping. The GitHub half (scopes / probed
+permissions) was already built; this release adds the AWS simulation.
+
+- `iam:SimulatePrincipalPolicy` against the 8 named high-risk actions
+  (iam:CreateUser, AttachUserPolicy, PutUserPolicy, CreateAccessKey,
+  PassRole, s3:DeleteBucket, ec2:TerminateInstances,
+  rds:DeleteDBInstance) — one call, right after the identity check, for
+  every principal type. A key that cannot read IAM still gets its blast
+  radius measured when simulation is allowed. 90 tests.
+- The report shows a `blast radius (simulation)` line with the allowed
+  actions, and the caveat on every finding: the simulator does not read
+  resource-based policies, so "allowed" is partial evidence. When
+  simulation is not permitted, the report falls back to the policy
+  names and says so.
+- Ranking now scores the simulation: a simulated privilege-escalation
+  action is 40 (a key that can escalate is effectively admin, whatever
+  its policy names say), a destructive action 35, nothing allowed 10.
+
 ## v0.3.0 — 2026-11-15
 
 Remote scanning and the pre-commit hook — stop secrets before they are

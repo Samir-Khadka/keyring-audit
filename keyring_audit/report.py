@@ -1,4 +1,4 @@
-"""Report rendering (Keyring Audit v0.3).
+"""Report rendering (Keyring Audit v0.4).
 
 Three formats: text (human), json (machine), md (a report to paste
 into an issue or a PR). All three render from the same ranked findings.
@@ -47,6 +47,14 @@ def render_text(ranked: list[dict], warnings: list[str],
         lines.append(f"   validity: {validity.get('live')} — {validity.get('reason', '')}")
         if validity.get("permissions"):
             lines.append(f"   can do: {', '.join(validity['permissions'])}")
+        blast = validity.get("blast_radius") or {}
+        if blast.get("method") == "simulate":
+            allowed = blast.get("allowed") or []
+            lines.append("   blast radius (simulation): "
+                         + (f"can {', '.join(allowed)}" if allowed
+                            else "no high-risk actions allowed")
+                         + " — simulation does not read resource-based "
+                           "policies, so 'allowed' is partial evidence")
         if validity.get("method") == "probed":
             lines.append("   (permissions probed — fine-grained token, no scope header)")
         if validity.get("last_used"):
@@ -98,6 +106,14 @@ def render_md(ranked: list[dict], warnings: list[str],
         lines.append("")
         lines.append(f"- Validity: {f.get('validity', {}).get('live')} — "
                      f"{f.get('validity', {}).get('reason', '')}")
+        blast = f.get("validity", {}).get("blast_radius") or {}
+        if blast.get("method") == "simulate":
+            allowed = blast.get("allowed") or []
+            lines.append("- blast radius (simulation): "
+                         + (f"can {', '.join(allowed)}" if allowed
+                            else "no high-risk actions allowed")
+                         + " — simulation does not read resource-based "
+                           "policies, so 'allowed' is partial evidence")
         for name, comp in f["risk"]["components"].items():
             lines.append(f"- {name}: {comp['score']} — {comp['why']}")
         lines.append("")
